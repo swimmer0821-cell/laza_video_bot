@@ -22,7 +22,7 @@ import prompts
 import voice
 from config import (ADMIN_IDS, BOT_TOKEN, DAILY_LIMIT_USD, DATA_DIR, DURATIONS, IMAGE_PRICE_USD, LANGS,
                     LIPSYNC_USD_PER_SEC, LOG_DIR, AZURE_VOICES, REFS_CUSTOM_DIR, REFS_DEFAULT_DIR, SCENE_MODEL, SCENE_PLANS, AVATAR_USD_PER_SEC,
-                    SCENE_TEMPLATE, TTS_USD_PER_1K, VIDEO_MODELS, VOICE_CHOICES)
+                    SCENE_TEMPLATE, SCENE_TEMPLATES, TTS_USD_PER_1K, VIDEO_MODELS, VOICE_CHOICES)
 
 # ---------- Лог: в файл (5 МБ × 3) и в консоль ----------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
@@ -737,7 +737,9 @@ async def sc_start(msg: Message, state: FSMContext):
     await state.set_state(Flow.sc_idea)
     await msg.answer("О чём ролик? Опишите сцены по-русски через стрелки, например:\n"
                      "«Лаза здоровается → показывает фисташковое мороженое → зовёт на дегустацию»\n\n"
-                     "Или возьмите готовый сюжет:", reply_markup=kb([("🎲 Знакомство с Laza", "sc:tpl")]))
+                     "Или возьмите готовый сюжет:",
+                     reply_markup=kb(*[[(t, f"sctpl:{k}") for k, (t, _) in list(SCENE_TEMPLATES.items())[i:i + 2]]
+                                       for i in range(0, len(SCENE_TEMPLATES), 2)]))
 
 
 @router.message(Flow.sc_idea, F.text, NOT_MENU, Allowed())
@@ -746,10 +748,12 @@ async def sc_idea(msg: Message, state: FSMContext):
     await sc_ask_len(msg, state)
 
 
-@router.callback_query(F.data == "sc:tpl", Allowed())
+@router.callback_query(F.data.startswith("sctpl:") | (F.data == "sc:tpl"), Allowed())
 async def sc_tpl(cb: CallbackQuery, state: FSMContext):
-    await cb.message.edit_reply_markup(reply_markup=None)
-    await state.update_data(sc_idea=SCENE_TEMPLATE)
+    key = cb.data.split(":")[1] if cb.data.startswith("sctpl:") else "intro"
+    title, plot = SCENE_TEMPLATES.get(key, SCENE_TEMPLATES["intro"])
+    await cb.message.edit_text(f"Сюжет: {title}\n{plot}")
+    await state.update_data(sc_idea=plot)
     await sc_ask_len(cb.message, state)
     await cb.answer()
 

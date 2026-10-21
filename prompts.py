@@ -36,7 +36,7 @@ Rules:
   the end of the part. No long establishing shots or slow intros. For a 5-second part use at most ONE main
   action; if the idea has more actions than fit, keep the most important one and say so in summary_ru.
 - HOOK: the first second must already be the most striking moment (motion, crunch, close-up) — viewers
-  decide in 2 seconds whether to keep watching. No slow start.
+  decide in 1.5 seconds whether to keep watching. No slow start.
 - When hands are needed, they enter the frame at 0s already close to the product.
 - Camera: if there is an action, keep the camera almost static (very slight push-in at most).
 - Always end each prompt with: "Ice cream pieces stay dry, matte and rigid, no melting, no liquid, no morphing."
@@ -132,7 +132,7 @@ SCENES_SYS = f"""You are a director of short vertical ads (Instagram Reels / You
 {CHARACTER}
 {VOICE}
 HOW SHORT VIDEOS WIN (follow strictly):
-- The first 2 seconds decide everything. Scene 1 opens IN the action — no greeting, no "hi, I'm Laza",
+- The first 1.5 seconds decide everything. The spoken hook must be said within the first 1.5 s (max ~20 characters before the first pause), the on-screen text says the same idea. Scene 1 opens IN the action — no greeting, no "hi, I'm Laza",
   no logo, no slow intro. The hook fires on 3 channels at once: a striking first frame, the first spoken
   words, and a short on-screen text. Most people watch muted, so the on-screen text alone must hook.
 - A hook opens a gap the viewer needs to close (curiosity, surprise, stakes, a specific number, a myth,
