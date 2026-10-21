@@ -92,7 +92,7 @@ LANGS = {"ru": "🇷🇺 Русский", "uz": "🇺🇿 O'zbekcha"}
 # Узбекский без акцента: Microsoft Azure, голос носителя языка (бесплатно до 500 000 символов в месяц).
 # Пока ключа нет — узбекский озвучивает ElevenLabs тем же голосом, что и русский.
 AZURE_SPEECH_KEY = os.getenv("AZURE_SPEECH_KEY", "")
-AZURE_SPEECH_REGION = os.getenv("AZURE_SPEECH_REGION", "westeurope")
+AZURE_SPEECH_REGION = os.getenv("AZURE_SPEECH_REGION", "northeurope")
 AZURE_VOICES = {   # голоса-носители языка: код языка → {название: голос Azure}
     "ru": {"Dmitry (муж.)": "ru-RU-DmitryNeural", "Dariya (жен.)": "ru-RU-DariyaNeural",
            "Svetlana (жен.)": "ru-RU-SvetlanaNeural"},

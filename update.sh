@@ -11,6 +11,7 @@ echo "== Версия: $(git log -1 --format='%h %ad %s' --date=format:'%d.%m.%Y
 echo "== Библиотеки"
 [ -d .venv ] || python3 -m venv .venv
 .venv/bin/pip install -q -r requirements.txt
+.venv/bin/python fix_env.py || true
 echo "== Перезапуск"
 systemctl restart laza_video_bot
 sleep 5
