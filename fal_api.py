@@ -5,7 +5,7 @@ from pathlib import Path
 
 import fal_client
 
-from config import IMAGE_MODEL, VideoModel
+from config import IMAGE_MODEL, LIPSYNC_MODEL, TTS_MODEL, VideoModel
 
 
 class GenError(Exception):
@@ -80,3 +80,22 @@ async def outpaint_vertical(image_url: str) -> str:
         return res["images"][0]["url"]
     except (KeyError, IndexError, TypeError) as e:
         raise GenError("Не получилось достроить фото.") from e
+
+
+async def tts(text: str, lang: str, voice: str) -> str:
+    """Озвучка ElevenLabs v3 → ссылка на mp3."""
+    args = {"text": text, "voice": voice, "language_code": lang, "stability": 0.5}
+    res = await _call(TTS_MODEL, args)
+    try:
+        return res["audio"]["url"]
+    except (KeyError, TypeError) as e:
+        raise GenError("Сервис озвучки не вернул звук. Попробуйте ещё раз.") from e
+
+
+async def lipsync(video_url: str, audio_url: str) -> str:
+    """Синхронизация губ персонажа с голосом (sync.so lipsync-2) → ссылка на mp4."""
+    res = await _call(LIPSYNC_MODEL, {"video_url": video_url, "audio_url": audio_url, "sync_mode": "cut_off"})
+    try:
+        return res["video"]["url"]
+    except (KeyError, TypeError) as e:
+        raise GenError("Синхронизация губ не удалась. Попробуйте ещё раз.") from e

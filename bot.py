@@ -1,6 +1,8 @@
 """Бот «LAZA Видео»: ролики из фото товара и персонаж Лаза. Генерация — fal.ai, промты — Claude."""
 import asyncio
 import logging
+import re
+import shutil
 import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -16,8 +18,9 @@ import db
 import fal_api
 import media
 import prompts
-from config import (ADMIN_IDS, BOT_TOKEN, DAILY_LIMIT_USD, DURATIONS, IMAGE_PRICE_USD, LOG_DIR,
-                    REFS_CUSTOM_DIR, REFS_DEFAULT_DIR, VIDEO_MODELS)
+from config import (ADMIN_IDS, BOT_TOKEN, DAILY_LIMIT_USD, DATA_DIR, DURATIONS, IMAGE_PRICE_USD, LANGS,
+                    LIPSYNC_USD_PER_SEC, LOG_DIR, REFS_CUSTOM_DIR, REFS_DEFAULT_DIR, SCENE_MODEL, SCENE_PLANS,
+                    SCENE_TEMPLATE, TTS_USD_PER_1K, VIDEO_MODELS, VOICE_CHOICES)
 
 # ---------- Лог: в файл (5 МБ × 3) и в консоль ----------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
@@ -30,10 +33,14 @@ router = Router()
 BUSY: set[int] = set()          # у кого сейчас идёт генерация (одна за раз на человека)
 
 BTN_VIDEO, BTN_CHAR, BTN_SPENT, BTN_HELP = "🎬 Видео из фото", "🧸 Персонаж Лаза", "💰 Расходы", "❓ Помощь"
+BTN_SCENES = "🎞 Ролик с Лазой (сцены)"
 MENU = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=BTN_VIDEO), KeyboardButton(text=BTN_CHAR)],
+                                     [KeyboardButton(text=BTN_SCENES)],
                                      [KeyboardButton(text=BTN_SPENT), KeyboardButton(text=BTN_HELP)]],
                            resize_keyboard=True)
-NOT_MENU = ~F.text.in_({BTN_VIDEO, BTN_CHAR, BTN_SPENT, BTN_HELP})   # кнопки меню работают в любой момент
+NOT_MENU = ~F.text.in_({BTN_VIDEO, BTN_CHAR, BTN_SCENES, BTN_SPENT, BTN_HELP})   # кнопки меню работают всегда
+LAST_DIR = DATA_DIR / "last"          # последний ролик каждого человека (для озвучки и синхронизации губ)
+LAST_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class Flow(StatesGroup):
@@ -43,6 +50,8 @@ class Flow(StatesGroup):
     char_photo = State()   # ждём фото товара для сцены (или «без фото»)
     pick = State()         # выбор длины / модели / подтверждение
     ref = State()          # админ присылает эталон персонажа
+    voice_text = State()   # ждём свой текст для озвучки
+    sc_idea = State()      # ждём идею ролика из сцен
 
 
 # ---------- Доступ ----------
@@ -113,7 +122,9 @@ async def start(msg: Message, state: FSMContext):
     log.info("start %s %s", msg.from_user.id, msg.from_user.full_name)
     await msg.answer("Привет! Я делаю короткие ролики для Reels и Shorts.\n\n"
                      f"{BTN_VIDEO} — пришлите фото товара, получите видео 5–30 с.\n"
-                     f"{BTN_CHAR} — Лаза в любой сцене, потом оживляем.\n\n"
+                     f"{BTN_CHAR} — Лаза в любой сцене, потом оживляем.\n"
+                     f"{BTN_SCENES} — ролик 15–30 с из 3 сцен с голосом Лазы.\n"
+                     "🔊 Любой готовый ролик можно озвучить на русском или узбекском.\n\n"
                      "Перед каждым запуском я покажу цену и спрошу подтверждение.", reply_markup=MENU)
 
 
@@ -128,14 +139,17 @@ async def help_(msg: Message):
              "",
              "Модели и цены (за 5 секунд):"]
     lines += [f"• {m.title} — ≈ {usd(m.price(5))} ({m.note})" for m in VIDEO_MODELS.values()]
-    lines += [f"• Картинка с персонажем — ≈ {usd(IMAGE_PRICE_USD)}", "",
+    lines += [f"• Картинка с персонажем — ≈ {usd(IMAGE_PRICE_USD)}",
+              "• Озвучка — ≈ 0,01–0,03 $ за реплику",
+              f"• Синхронизация губ — ≈ {usd(LIPSYNC_USD_PER_SEC * 5)} за 5 с", "",
               "Советы: фото товара — чёткое, при хорошем свете, товар крупно. "
               "Надписи, цены и логотип добавляйте потом в CapCut: ИИ искажает текст.",
               f"Лимит трат на всех за сутки: {usd(DAILY_LIMIT_USD)}."]
     if msg.from_user.id in ADMIN_IDS:
         lines += ["", "Для руководителя:", "/add id Имя — дать доступ", "/del id — убрать доступ",
                   "/users — список", "/refs — эталоны персонажа", "/ref_add — добавить эталон",
-                  "/ref_reset — вернуть стандартные эталоны"]
+                  "/ref_reset — вернуть стандартные эталоны",
+                  f"/voice — голос Лазы (сейчас: {db.get_voice()})"]
     await msg.answer("\n".join(lines))
 
 
@@ -394,10 +408,10 @@ async def go(cb: CallbackQuery, state: FSMContext, bot: Bot):
     await cb.message.edit_reply_markup(reply_markup=None)   # кнопку нельзя нажать дважды
     await cb.answer("Запускаю")
     BUSY.add(uid)
-    asyncio.create_task(run_video(bot, cb.message.chat.id, cb.from_user, data))
+    asyncio.create_task(run_video(bot, cb.message.chat.id, cb.from_user, data, state))
 
 
-async def run_video(bot: Bot, chat_id: int, user, data: dict):
+async def run_video(bot: Bot, chat_id: int, user, data: dict, state: FSMContext):
     """Генерирует части по очереди (каждая следующая — с последнего кадра), склеивает, отправляет."""
     m = VIDEO_MODELS[data["model"]]
     parts = data["plan"]["parts"]
@@ -424,9 +438,12 @@ async def run_video(bot: Bot, chat_id: int, user, data: dict):
         if final not in temp:
             temp.append(final)
         db.log_gen(user.id, user.full_name, data.get("kind", "product"), m.key, data["sec"], data["price"], "ok")
+        await remember(state, user.id, final, data.get("kind", "product"),
+                       data["plan"].get("summary_ru", "") + " " + data.get("idea", ""))
         await bot.send_video(chat_id, FSInputFile(final, filename="laza.mp4"), supports_streaming=True,
                              caption=f"✅ {m.title}, {data['sec']} с, ≈ {usd(data['price'])}",
-                             reply_markup=kb([("🔁 Ещё вариант", "again"), ("✏️ Другая идея", "newidea")]))
+                             reply_markup=kb([("🔊 Озвучить", "voice")],
+                                             [("🔁 Ещё вариант", "again"), ("✏️ Другая идея", "newidea")]))
         log.info("Видео готово %s", user.id)
     except fal_api.GenError as e:
         db.log_gen(user.id, user.full_name, data.get("kind", "product"), m.key, data["sec"], 0, "error")
@@ -442,6 +459,516 @@ async def run_video(bot: Bot, chat_id: int, user, data: dict):
         except Exception:  # noqa: BLE001
             pass
         media.cleanup(*temp)
+
+
+# ---------- Последний ролик: запоминаем для озвучки ----------
+async def remember(state: FSMContext, uid: int, video: Path, kind: str, context: str,
+                   track: Path | None = None) -> None:
+    """Копирует готовый ролик в data/last и пишет его данные в состояние человека."""
+    for old in LAST_DIR.glob(f"{uid}_*"):
+        old.unlink(missing_ok=True)
+    stamp = int(time.time())
+    keep = LAST_DIR / f"{uid}_{stamp}.mp4"
+    shutil.copy(video, keep)
+    upd = {"last_video": str(keep), "last_sec": round(await media.duration(keep), 2),
+           "last_kind": kind, "last_ctx": context.strip()[:600], "voice_track": ""}
+    if track:
+        tkeep = LAST_DIR / f"{uid}_{stamp}_voice.m4a"
+        shutil.copy(track, tkeep)
+        upd["voice_track"] = str(tkeep)
+    await state.update_data(**upd)
+
+
+def speech_sec(text: str) -> float:
+    """Примерная длительность реплики (теги вроде [excited] не звучат)."""
+    return len(re.sub(r"\[[^\]]*\]", "", text).strip()) / 13
+
+
+def shown(text: str) -> str:
+    """Текст реплики без служебных меток интонации."""
+    return re.sub(r"\s*\[[^\]]*\]\s*", " ", text).strip()
+
+
+def tts_price(text: str) -> float:
+    return max(0.01, round(len(text) / 1000 * TTS_USD_PER_1K, 2))
+
+
+async def last_ok(cb: CallbackQuery, state: FSMContext) -> dict | None:
+    data = await state.get_data()
+    if not data.get("last_video") or not Path(data["last_video"]).exists():
+        await cb.answer("Ролик устарел — сделайте новый через меню", show_alert=True)
+        return None
+    return data
+
+
+# ---------- 🔊 Озвучка ----------
+@router.callback_query(F.data == "voice", Allowed())
+async def voice_start(cb: CallbackQuery, state: FSMContext):
+    if not await last_ok(cb, state):
+        return
+    await cb.answer()
+    await cb.message.answer("На каком языке говорит Лаза?",
+                            reply_markup=kb([(t, f"vlang:{k}") for k, t in LANGS.items()]))
+
+
+@router.callback_query(F.data.startswith("vlang:"), Allowed())
+async def voice_lang(cb: CallbackQuery, state: FSMContext):
+    await state.update_data(vlang=cb.data.split(":")[1])
+    await cb.message.edit_text("Текст реплики:", reply_markup=kb([("🎲 Напиши сам", "vtext:auto")],
+                                                                 [("✍️ Свой текст", "vtext:own")]))
+    await cb.answer()
+
+
+@router.callback_query(F.data == "vtext:own", Allowed())
+async def voice_own(cb: CallbackQuery, state: FSMContext):
+    data = await last_ok(cb, state)
+    if not data:
+        return
+    await cb.answer()
+    await state.set_state(Flow.voice_text)
+    lang = data.get("vlang", "ru")
+    await cb.message.answer(f"Напишите, что скажет Лаза ({LANGS[lang]}). Для ролика {data['last_sec']:.0f} с — "
+                            f"до {int(data['last_sec'] * 13)} символов. Узбекский — латиницей.")
+
+
+@router.message(Flow.voice_text, F.text, NOT_MENU, Allowed())
+async def voice_own_text(msg: Message, state: FSMContext):
+    await state.set_state(None)
+    await voice_confirm(msg, state, msg.text.strip(), "")
+
+
+@router.callback_query(F.data == "vtext:auto", Allowed())
+async def voice_auto(cb: CallbackQuery, state: FSMContext):
+    data = await last_ok(cb, state)
+    if not data:
+        return
+    await cb.answer()
+    status = await cb.message.answer("✍️ Claude пишет реплику…")
+    frame = None
+    try:
+        frame = await media.last_frame(Path(data["last_video"]))
+        res = await prompts.voice_line(data.get("last_ctx", ""), data["last_sec"], data.get("vlang", "ru"), frame)
+        await voice_confirm(cb.message, state, res["text"], res.get("ru", ""))
+    except Exception:
+        log.exception("Ошибка реплики")
+        await cb.message.answer("⚠️ Не получилось написать реплику. Попробуйте ещё раз или напишите свой текст.",
+                                reply_markup=kb([("🎲 Ещё раз", "vtext:auto"), ("✍️ Свой текст", "vtext:own")]))
+    finally:
+        await status.delete()
+        if frame:
+            media.cleanup(frame)
+
+
+async def voice_confirm(msg: Message, state: FSMContext, text: str, ru: str):
+    data = await state.get_data()
+    lang, sec = data.get("vlang", "ru"), data.get("last_sec", 5)
+    await state.update_data(vtext=text)
+    est = speech_sec(text)
+    warn = (f"\n⚠️ Реплика (~{est:.0f} с) длиннее ролика ({sec:.0f} с): последний кадр продлится."
+            if est > sec + 0.5 else "")
+    tr = f"\nПеревод: {ru}" if ru and lang != "ru" and ru != text else ""
+    await msg.answer(f"🔊 {LANGS[lang]}, голос {db.get_voice()}:\n«{shown(text)}»{tr}\n\n"
+                     f"Звучит ≈ {est:.0f} с. Цена ≈ {usd(tts_price(text))}{warn}",
+                     reply_markup=kb([("✅ Озвучить", "vgo")],
+                                     [("🎲 Другой текст", "vtext:auto"), ("✍️ Свой текст", "vtext:own")]))
+
+
+@router.callback_query(F.data == "vgo", Allowed())
+async def voice_go(cb: CallbackQuery, state: FSMContext, bot: Bot):
+    data = await last_ok(cb, state)
+    if not data or not data.get("vtext"):
+        return
+    uid = cb.from_user.id
+    if uid in BUSY:
+        await cb.answer("Предыдущая генерация ещё идёт", show_alert=True)
+        return
+    await cb.message.edit_reply_markup(reply_markup=None)
+    await cb.answer("Озвучиваю")
+    BUSY.add(uid)
+    asyncio.create_task(run_voice(bot, cb.message.chat.id, cb.from_user, data, state))
+
+
+async def make_voice(text: str, lang: str) -> Path:
+    url = await fal_api.tts(text, lang, db.get_voice())
+    return await media.download(url, "mp3")
+
+
+def after_voice_kb(kind: str, seconds: float) -> InlineKeyboardMarkup:
+    rows = []
+    if kind in ("character", "scenes"):
+        rows.append([(f"👄 Синхронизировать губы — ≈ {usd(LIPSYNC_USD_PER_SEC * seconds)}", "lips")])
+    rows.append([("🔊 Другая озвучка", "voice")])
+    return kb(*rows)
+
+
+async def run_voice(bot: Bot, chat_id: int, user, data: dict, state: FSMContext):
+    temp: list[Path] = []
+    status = await bot.send_message(chat_id, "🔊 Озвучиваю… (до минуты)")
+    text, lang = data["vtext"], data.get("vlang", "ru")
+    try:
+        mp3 = await make_voice(text, lang)
+        temp.append(mp3)
+        db.log_gen(user.id, user.full_name, "voice", "eleven-v3", 0, tts_price(text), "ok")
+        track = await media.build_track([(mp3, 0.0, None)], data["last_sec"])
+        temp.append(track)
+        out = await media.mux_voice(Path(data["last_video"]), track)
+        temp.append(out)
+        final = await media.fit_telegram(out)
+        temp.append(final)
+        await state.update_data(voice_track=str(_keep_track(user.id, track)))
+        sec = await media.duration(final)
+        await bot.send_video(chat_id, FSInputFile(final, filename="laza_voice.mp4"), supports_streaming=True,
+                             caption=f"✅ С голосом Лазы ({LANGS[lang]})",
+                             reply_markup=after_voice_kb(data.get("last_kind", ""), sec))
+        log.info("Озвучка готова %s", user.id)
+    except fal_api.GenError as e:
+        await bot.send_message(chat_id, f"⚠️ {e}")
+    except Exception:
+        log.exception("Ошибка озвучки")
+        await bot.send_message(chat_id, "⚠️ Не получилось озвучить. Попробуйте ещё раз.")
+    finally:
+        BUSY.discard(user.id)
+        await status.delete()
+        media.cleanup(*temp)
+
+
+def _keep_track(uid: int, track: Path) -> Path:
+    for old in LAST_DIR.glob(f"{uid}_*_voice.m4a"):
+        old.unlink(missing_ok=True)
+    keep = LAST_DIR / f"{uid}_{int(time.time())}_voice.m4a"
+    shutil.copy(track, keep)
+    return keep
+
+
+# ---------- 👄 Синхронизация губ ----------
+@router.callback_query(F.data == "lips", Allowed())
+async def lips(cb: CallbackQuery, state: FSMContext, bot: Bot):
+    data = await last_ok(cb, state)
+    if not data:
+        return
+    if not data.get("voice_track") or not Path(data["voice_track"]).exists():
+        await cb.answer("Сначала озвучьте ролик", show_alert=True)
+        return
+    uid = cb.from_user.id
+    if uid in BUSY:
+        await cb.answer("Предыдущая генерация ещё идёт", show_alert=True)
+        return
+    sec = max(data["last_sec"], await media.duration(Path(data["voice_track"])))
+    price = round(LIPSYNC_USD_PER_SEC * sec, 2)
+    if db.spent_today() + price > DAILY_LIMIT_USD:
+        await cb.answer(f"Дневной лимит {usd(DAILY_LIMIT_USD)} будет превышен", show_alert=True)
+        return
+    await cb.message.edit_reply_markup(reply_markup=None)
+    await cb.answer("Запускаю")
+    BUSY.add(uid)
+    asyncio.create_task(run_lips(bot, cb.message.chat.id, cb.from_user, data, sec, price))
+
+
+async def run_lips(bot: Bot, chat_id: int, user, data: dict, sec: float, price: float):
+    temp: list[Path] = []
+    status = await bot.send_message(chat_id, "👄 Синхронизирую губы… (2–5 минут)")
+    try:
+        video = await media.pad_video(Path(data["last_video"]), sec)
+        if video != Path(data["last_video"]):
+            temp.append(video)
+        url = await fal_api.lipsync(await fal_api.upload(video), await fal_api.upload(Path(data["voice_track"])))
+        out = await media.download(url, "mp4")
+        temp.append(out)
+        final = await media.fit_telegram(out)
+        temp.append(final)
+        db.log_gen(user.id, user.full_name, "lipsync", "sync-lipsync-2", int(sec), price, "ok")
+        await bot.send_video(chat_id, FSInputFile(final, filename="laza_lips.mp4"), supports_streaming=True,
+                             caption=f"✅ Губы синхронизированы, ≈ {usd(price)}. На мультперсонаже результат "
+                                     "бывает разным — если хуже, используйте версию без синхронизации.")
+    except fal_api.GenError as e:
+        await bot.send_message(chat_id, f"⚠️ {e}")
+    except Exception:
+        log.exception("Ошибка синхронизации губ")
+        await bot.send_message(chat_id, "⚠️ Не получилось синхронизировать губы.")
+    finally:
+        BUSY.discard(user.id)
+        await status.delete()
+        media.cleanup(*temp)
+
+
+# ---------- 🎞 Ролик с Лазой из нескольких сцен ----------
+def scenes_price(total: int, lang: str | None) -> tuple[float, float, float]:
+    """(картинки, видео, голос) в долларах."""
+    n, sec = SCENE_PLANS[total]
+    m = VIDEO_MODELS[SCENE_MODEL]
+    return (round(IMAGE_PRICE_USD * n, 2), round(m.usd_per_sec * sec * n, 2),
+            0.03 if lang else 0.0)
+
+
+@router.message(F.text == BTN_SCENES, Allowed())
+async def sc_start(msg: Message, state: FSMContext):
+    await state.set_state(Flow.sc_idea)
+    await msg.answer("О чём ролик? Опишите сцены по-русски через стрелки, например:\n"
+                     "«Лаза здоровается → показывает фисташковое мороженое → зовёт на дегустацию»\n\n"
+                     "Или возьмите готовый сюжет:", reply_markup=kb([("🎲 Знакомство с Laza", "sc:tpl")]))
+
+
+@router.message(Flow.sc_idea, F.text, NOT_MENU, Allowed())
+async def sc_idea(msg: Message, state: FSMContext):
+    await state.update_data(sc_idea=msg.text.strip())
+    await sc_ask_len(msg, state)
+
+
+@router.callback_query(F.data == "sc:tpl", Allowed())
+async def sc_tpl(cb: CallbackQuery, state: FSMContext):
+    await cb.message.edit_reply_markup(reply_markup=None)
+    await state.update_data(sc_idea=SCENE_TEMPLATE)
+    await sc_ask_len(cb.message, state)
+    await cb.answer()
+
+
+async def sc_ask_len(msg: Message, state: FSMContext):
+    await state.set_state(None)
+    rows = []
+    for total, (n, sec) in SCENE_PLANS.items():
+        img, vid, _ = scenes_price(total, "ru")
+        rows.append([(f"{total} с · {n} сцены по {sec} с — ≈ {usd(img + vid)}", f"sclen:{total}")])
+    await msg.answer("Длина ролика? (видео — Kling 3.0, цена с картинками)", reply_markup=kb(*rows))
+
+
+@router.callback_query(F.data.startswith("sclen:"), Allowed())
+async def sc_len(cb: CallbackQuery, state: FSMContext):
+    await state.update_data(sc_total=int(cb.data.split(":")[1]))
+    rows = [[(t, f"sclang:{k}") for k, t in LANGS.items()], [("🔇 Без голоса", "sclang:none")]]
+    await cb.message.edit_text("Голос Лазы:", reply_markup=kb(*rows))
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("sclang:"), Allowed())
+async def sc_lang(cb: CallbackQuery, state: FSMContext):
+    lang = cb.data.split(":")[1]
+    await state.update_data(sc_lang="" if lang == "none" else lang)
+    await cb.answer()
+    await sc_plan(cb.message, state)
+
+
+async def sc_plan(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    if not data.get("sc_idea") or not data.get("sc_total"):
+        await msg.answer("Начните заново: " + BTN_SCENES)
+        return
+    total, lang = data["sc_total"], data.get("sc_lang") or None
+    n, sec = SCENE_PLANS[total]
+    await msg.edit_text("✍️ Claude пишет сценарий и реплики…")
+    try:
+        sb = await prompts.storyboard(refs(), data["sc_idea"], n, sec, lang)
+    except Exception:
+        log.exception("Ошибка раскадровки")
+        await msg.edit_text("⚠️ Не получилось написать сценарий.", reply_markup=kb([("🔁 Ещё раз", "scplan")]))
+        return
+    img, vid, vo = scenes_price(total, lang)
+    lines = [f"🎞 {sb.get('summary_ru', '')}", ""]
+    for i, s in enumerate(sb["scenes"], 1):
+        line = f"{i}. {s.get('title_ru', '')} ({sec} с)"
+        if s.get("voice"):
+            line += f"\n   🗣 «{shown(s['voice'])}»"
+            if lang != "ru" and s.get("voice_ru"):
+                line += f"\n   ({s['voice_ru']})"
+        lines.append(line)
+    lines += ["", f"Шаг 1 — картинки сцен: ≈ {usd(img)}",
+              f"Шаг 2 — оживление и монтаж: ≈ {usd(vid + vo)}",
+              "После картинок можно перерисовать любую сцену до оживления."]
+    await state.update_data(sc_board=sb, sc_imgs=[])
+    await msg.edit_text("\n".join(lines), reply_markup=kb([(f"🎨 Нарисовать сцены — ≈ {usd(img)}", "scdraw")],
+                                                           [("🔁 Другой сценарий", "scplan"),
+                                                            ("❌ Отмена", "cancel")]))
+
+
+@router.callback_query(F.data == "scplan", Allowed())
+async def sc_replan(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
+    await sc_plan(cb.message, state)
+
+
+@router.callback_query(F.data == "scdraw", Allowed())
+async def sc_draw(cb: CallbackQuery, state: FSMContext, bot: Bot):
+    data = await state.get_data()
+    if not data.get("sc_board"):
+        await cb.answer("Начните заново через меню", show_alert=True)
+        return
+    n = len(data["sc_board"]["scenes"])
+    if db.spent_today() + IMAGE_PRICE_USD * n > DAILY_LIMIT_USD:
+        await cb.answer(f"Дневной лимит {usd(DAILY_LIMIT_USD)} будет превышен", show_alert=True)
+        return
+    if cb.from_user.id in BUSY:
+        await cb.answer("Предыдущая генерация ещё идёт", show_alert=True)
+        return
+    await cb.message.edit_reply_markup(reply_markup=None)
+    await cb.answer("Рисую")
+    BUSY.add(cb.from_user.id)
+    asyncio.create_task(draw_scenes(bot, cb.message.chat.id, cb.from_user, state, list(range(n))))
+
+
+async def draw_scenes(bot: Bot, chat_id: int, user, state: FSMContext, which: list[int]):
+    """Рисует сцены с Лазой (все или выбранные) и показывает кнопки оживления."""
+    data = await state.get_data()
+    scenes = data["sc_board"]["scenes"]
+    imgs = list(data.get("sc_imgs") or [""] * len(scenes))
+    status = await bot.send_message(chat_id, f"🎨 Рисую сцены: {len(which)} шт. (до минуты на каждую)…")
+    try:
+        ref_urls = [await fal_api.upload(p) for p in refs()]
+        for i in which:
+            url = await fal_api.character_image(ref_urls, scenes[i]["image_prompt"])
+            img = await media.download(url, "jpg")
+            db.log_gen(user.id, user.full_name, "scene_image", "nano-banana-pro", 0, IMAGE_PRICE_USD, "ok", url)
+            if imgs[i]:
+                media.cleanup(Path(imgs[i]))
+            imgs[i] = str(img)
+            await bot.send_photo(chat_id, FSInputFile(img), caption=f"Сцена {i + 1}: {scenes[i].get('title_ru', '')}")
+        await state.update_data(sc_imgs=imgs)
+        total, lang = data["sc_total"], data.get("sc_lang") or None
+        _, vid, vo = scenes_price(total, lang)
+        await bot.send_message(chat_id, "Всё нравится? Тогда оживляем и монтируем. "
+                                        "Не нравится сцена — перерисуйте её (≈ 0,15 $).",
+                               reply_markup=kb([(f"🎬 Оживить и смонтировать — ≈ {usd(vid + vo)}", "scgo")],
+                                               [(f"🔁 Сцена {i + 1}", f"scredo:{i}") for i in range(len(scenes))],
+                                               [("❌ Отмена", "cancel")]))
+    except fal_api.GenError as e:
+        await bot.send_message(chat_id, f"⚠️ {e}", reply_markup=kb([("🔁 Ещё раз", "scdraw")]))
+    except Exception:
+        log.exception("Ошибка сцен")
+        await bot.send_message(chat_id, "⚠️ Не получилось нарисовать сцены.", reply_markup=kb([("🔁 Ещё раз", "scdraw")]))
+    finally:
+        BUSY.discard(user.id)
+        await status.delete()
+
+
+@router.callback_query(F.data.startswith("scredo:"), Allowed())
+async def sc_redo(cb: CallbackQuery, state: FSMContext, bot: Bot):
+    data = await state.get_data()
+    i = int(cb.data.split(":")[1])
+    if not data.get("sc_board") or i >= len(data["sc_board"]["scenes"]):
+        await cb.answer("Начните заново через меню", show_alert=True)
+        return
+    if cb.from_user.id in BUSY:
+        await cb.answer("Предыдущая генерация ещё идёт", show_alert=True)
+        return
+    await cb.message.edit_reply_markup(reply_markup=None)
+    await cb.answer(f"Перерисовываю сцену {i + 1}")
+    BUSY.add(cb.from_user.id)
+    asyncio.create_task(draw_scenes(bot, cb.message.chat.id, cb.from_user, state, [i]))
+
+
+@router.callback_query(F.data == "scgo", Allowed())
+async def sc_go(cb: CallbackQuery, state: FSMContext, bot: Bot):
+    data = await state.get_data()
+    imgs = data.get("sc_imgs") or []
+    if not imgs or not all(p and Path(p).exists() for p in imgs):
+        await cb.answer("Картинки устарели — начните заново", show_alert=True)
+        return
+    _, vid, vo = scenes_price(data["sc_total"], data.get("sc_lang") or None)
+    if db.spent_today() + vid + vo > DAILY_LIMIT_USD:
+        await cb.answer(f"Дневной лимит {usd(DAILY_LIMIT_USD)} будет превышен", show_alert=True)
+        return
+    if cb.from_user.id in BUSY:
+        await cb.answer("Предыдущая генерация ещё идёт", show_alert=True)
+        return
+    await cb.message.edit_reply_markup(reply_markup=None)
+    await cb.answer("Запускаю")
+    BUSY.add(cb.from_user.id)
+    asyncio.create_task(run_scenes(bot, cb.message.chat.id, cb.from_user, data, state, vid))
+
+
+async def run_scenes(bot: Bot, chat_id: int, user, data: dict, state: FSMContext, vid_price: float):
+    """Оживляет сцены по очереди, склеивает, накладывает голос по сценам."""
+    m = VIDEO_MODELS[SCENE_MODEL]
+    scenes, imgs = data["sc_board"]["scenes"], data["sc_imgs"]
+    total, lang = data["sc_total"], data.get("sc_lang") or None
+    n, sec = SCENE_PLANS[total]
+    temp: list[Path] = []
+    cleanup_old_tmp()
+    status = await bot.send_message(chat_id, "⏳ Начинаю…")
+    log.info("Сцены старт %s: %s с, язык %s", user.id, total, lang)
+    try:
+        clips = []
+        for i, (s, img) in enumerate(zip(scenes, imgs), 1):
+            await status.edit_text(f"⏳ Оживляю сцену {i} из {n}… (2–5 минут каждая). Можно пользоваться ботом.")
+            url = await fal_api.video_part(m, await fal_api.upload(Path(img)), s["motion_prompt"], sec)
+            clip = await media.download(url, "mp4")
+            clips.append(clip)
+            temp.append(clip)
+        await status.edit_text("🎞 Монтирую…")
+        joined = await media.concat(clips)
+        temp.append(joined)
+        db.log_gen(user.id, user.full_name, "scenes", m.key, total, vid_price, "ok")
+        final, track = joined, None
+        if lang and any(s.get("voice") for s in scenes):
+            await status.edit_text("🔊 Озвучиваю…")
+            voices = []
+            for i, s in enumerate(scenes):
+                if s.get("voice"):
+                    mp3 = await make_voice(s["voice"], lang)
+                    temp.append(mp3)
+                    voices.append((mp3, i * sec + 0.2, sec - 0.2))
+                    db.log_gen(user.id, user.full_name, "voice", "eleven-v3", 0, tts_price(s["voice"]), "ok")
+            track = await media.build_track(voices, await media.duration(joined))
+            temp.append(track)
+            final = await media.mux_voice(joined, track)
+            temp.append(final)
+        await remember(state, user.id, joined, "scenes", data["sc_board"].get("summary_ru", ""), track)
+        out = await media.fit_telegram(final)
+        temp.append(out)
+        sec_total = await media.duration(out)
+        markup = after_voice_kb("scenes", sec_total) if track else kb([("🔊 Озвучить", "voice")])
+        await bot.send_video(chat_id, FSInputFile(out, filename="laza_scenes.mp4"), supports_streaming=True,
+                             caption=f"✅ Ролик с Лазой, {total} с, {n} сцены", reply_markup=markup)
+        log.info("Сцены готовы %s", user.id)
+    except fal_api.GenError as e:
+        await bot.send_message(chat_id, f"⚠️ {e}")
+    except Exception:
+        log.exception("Ошибка сцен")
+        await bot.send_message(chat_id, "⚠️ Что-то пошло не так при монтаже. Попробуйте ещё раз.")
+    finally:
+        BUSY.discard(user.id)
+        try:
+            await status.delete()
+        except Exception:  # noqa: BLE001
+            pass
+        media.cleanup(*temp)
+
+
+# ---------- Руководитель: голос Лазы ----------
+@router.message(Command("voice"), Admin())
+async def voice_choose(msg: Message):
+    rows = [[(("✅ " if v == db.get_voice() else "") + v, f"vsample:{v}")] for v in VOICE_CHOICES]
+    await msg.answer(f"Голос Лазы сейчас: {db.get_voice()}.\nНажмите на голос — пришлю пример (≈ 0,01 $), "
+                     "затем кнопкой выберите его.", reply_markup=kb(*rows))
+
+
+@router.callback_query(F.data.startswith("vsample:"), Allowed())
+async def voice_sample(cb: CallbackQuery):
+    if cb.from_user.id not in ADMIN_IDS:
+        await cb.answer("Только для руководителя", show_alert=True)
+        return
+    name = cb.data.split(":", 1)[1]
+    await cb.answer("Готовлю пример")
+    try:
+        url = await fal_api.tts("[excited] Привет! Я Лаза — настоящее сублимированное мороженое. Salom, men Lazaman!",
+                                "ru", name)
+        mp3 = await media.download(url, "mp3")
+        db.log_gen(cb.from_user.id, cb.from_user.full_name, "voice", "eleven-v3", 0, 0.01, "ok")
+        await cb.message.answer_audio(FSInputFile(mp3, filename=f"{name}.mp3"), title=f"Голос {name}",
+                                      reply_markup=kb([(f"Выбрать {name}", f"vset:{name}")]))
+        media.cleanup(mp3)
+    except fal_api.GenError as e:
+        await cb.message.answer(f"⚠️ {e}")
+
+
+@router.callback_query(F.data.startswith("vset:"), Allowed())
+async def voice_set(cb: CallbackQuery):
+    if cb.from_user.id not in ADMIN_IDS:
+        await cb.answer("Только для руководителя", show_alert=True)
+        return
+    name = cb.data.split(":", 1)[1]
+    db.set_voice(name)
+    await cb.message.edit_reply_markup(reply_markup=None)
+    await cb.answer()
+    await cb.message.answer(f"✅ Голос Лазы: {name}")
 
 
 # ---------- Руководитель: доступ и эталоны ----------

@@ -113,6 +113,64 @@ async def fit_telegram(video: Path, limit_mb: int = 48) -> Path:
     return dst
 
 
+async def duration(path: Path) -> float:
+    """Длительность файла в секундах."""
+    out = await _run("ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(path))
+    return float(out.strip() or 0)
+
+
+async def build_track(voices: list[tuple[Path, float, float | None]], total: float) -> Path:
+    """Собирает дорожку голоса: каждая реплика (файл, начало в с, макс. длина в с или None)
+    ставится на своё место. Длина дорожки — не меньше total."""
+    args = ["ffmpeg", "-y", "-loglevel", "error"]
+    for p, _, _ in voices:
+        args += ["-i", str(p)]
+    chains, labels = [], ""
+    for i, (_, start, maxlen) in enumerate(voices):
+        f = f"[{i}:a]aresample=44100,aformat=channel_layouts=stereo"
+        if maxlen:
+            f += f",atrim=0:{maxlen:.2f},afade=t=out:st={max(0.0, maxlen - 0.3):.2f}:d=0.3"
+        ms = int(start * 1000)
+        f += f",adelay={ms}|{ms}[a{i}]"
+        chains.append(f)
+        labels += f"[a{i}]"
+    chains.append(f"{labels}amix=inputs={len(voices)}:duration=longest:normalize=0,apad=whole_dur={total:.2f}[out]")
+    dst = new_path("m4a")
+    args += ["-filter_complex", ";".join(chains), "-map", "[out]", "-c:a", "aac", "-b:a", "192k", str(dst)]
+    await _run(*args)
+    return dst
+
+
+async def mux_voice(video: Path, track: Path) -> Path:
+    """Накладывает голос на видео. Звук самого видео (если есть) делает тише.
+    Если голос длиннее видео — последний кадр продлевается."""
+    vdur, adur = await duration(video), await duration(track)
+    extra = max(0.0, adur - vdur + 0.3)
+    has_a = await has_audio(video)
+    vf = f"[0:v]tpad=stop_mode=clone:stop_duration={extra:.2f}[v]" if extra > 0.05 else "[0:v]null[v]"
+    af = ("[0:a]volume=0.25[bg];[1:a]volume=1.0[vo];[bg][vo]amix=inputs=2:duration=longest:normalize=0[a]"
+          if has_a else "[1:a]anull[a]")
+    dst = new_path("mp4")
+    await _run("ffmpeg", "-y", "-loglevel", "error", "-i", str(video), "-i", str(track),
+               "-filter_complex", f"{vf};{af}", "-map", "[v]", "-map", "[a]",
+               "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+               "-c:a", "aac", "-b:a", "192k", "-t", f"{max(vdur, adur) + 0.3:.2f}",
+               "-movflags", "+faststart", str(dst))
+    return dst
+
+
+async def pad_video(video: Path, seconds: float) -> Path:
+    """Продлевает видео последним кадром до нужной длины (для синхронизации губ)."""
+    vdur = await duration(video)
+    if seconds <= vdur + 0.05:
+        return video
+    dst = new_path("mp4")
+    await _run("ffmpeg", "-y", "-loglevel", "error", "-i", str(video), "-vf",
+               f"tpad=stop_mode=clone:stop_duration={seconds - vdur:.2f}", "-an",
+               "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", str(dst))
+    return dst
+
+
 def cleanup(*paths: Path) -> None:
     for p in paths:
         try:

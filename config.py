@@ -81,3 +81,21 @@ VIDEO_MODELS: dict[str, VideoModel] = {
 }
 
 DURATIONS = [5, 10, 15, 30]
+
+# Озвучка: ElevenLabs v3 (русский и узбекский), $0.10 за 1000 символов
+TTS_MODEL = "fal-ai/elevenlabs/tts/eleven-v3"
+TTS_USD_PER_1K = 0.10
+DEFAULT_VOICE = os.getenv("LAZA_VOICE", "Charlie")
+VOICE_CHOICES = ["Charlie", "Liam", "Will", "Callum", "Lily", "Jessica"]   # из встроенных голосов ElevenLabs
+LANGS = {"ru": "🇷🇺 Русский", "uz": "🇺🇿 O'zbekcha"}
+
+# Синхронизация губ: sync.so lipsync-2, $3 за минуту
+LIPSYNC_MODEL = "fal-ai/sync-lipsync/v2"
+LIPSYNC_USD_PER_SEC = 0.05
+
+# Ролик с Лазой из нескольких сцен: всегда Kling 3.0 (держит персонажа, без своего звука)
+SCENE_MODEL = "kling"
+SCENE_PLANS = {15: (3, 5), 30: (3, 10)}      # длина ролика → (сцен, секунд в сцене)
+SCENE_TEMPLATE = ("Лаза приветствует зрителя и представляется → показывает цех, где из натуральных сливок "
+                  "делают сублимированное мороженое → угощает гостей на дегустации в офисе и зовёт заказать")
+SETTINGS_PATH = DATA_DIR / "settings.json"

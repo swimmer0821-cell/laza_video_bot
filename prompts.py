@@ -55,6 +55,8 @@ Rules:
 - Describe one scene for a vertical 9:16 frame: setting, pose, emotion, lighting, camera angle.
 - If a product photo is given, the mascot interacts with that exact product; keep its packaging unchanged.
 - No text in the image except "LAZA" on the cap/sneakers and existing product labels.
+- Framing: medium shot, the mascot is big in the frame — about 55-65% of the frame height, face clearly
+  visible and well lit, mouth visible (for lip-sync later). Not a tiny figure in a big room.
 - Leave some empty space at the top for captions that will be added later.
 - Prompt in English, 50-110 words. "summary_ru" — 1 short sentence in Russian.
 Return ONLY JSON: {{"summary_ru": "...", "prompt": "..."}}"""
@@ -74,7 +76,7 @@ def _parse(text: str) -> dict:
 
 async def _ask(system: str, images: list[Path], text: str) -> dict:
     content = [_img_block(p) for p in images] + [{"type": "text", "text": text}]
-    msg = await client.messages.create(model=CLAUDE_MODEL, max_tokens=1500, system=system,
+    msg = await client.messages.create(model=CLAUDE_MODEL, max_tokens=4000, system=system,
                                        messages=[{"role": "user", "content": content}])
     out = "".join(b.text for b in msg.content if b.type == "text")
     logging.info("Claude ответ: %s", out[:500])
@@ -106,4 +108,68 @@ async def image_prompt(refs: list[Path], product: Path | None, idea: str) -> dic
     res = await _ask(IMAGE_SYS, imgs, text)
     if not str(res.get("prompt", "")).strip():
         raise ValueError("Пустой промт")
+    return res
+
+
+VOICE = """Laza's voice and personality: a cheerful, friendly, slightly mischievous young character, proud of
+"real ice cream without middlemen", speaks simply, warmly, with energy. Speaks to the viewer as a friend.
+Russian: natural modern spoken Russian, «ты»-форма. Uzbek: natural spoken Uzbek in LATIN script
+(o', g', sh, ch), «sen» form, no Russian words except brand names.
+Speech rate ~13 characters per second. You may add at most 2 ElevenLabs v3 audio tags in English square
+brackets for emotion, e.g. [excited], [laughs], [whispers], [cheerfully] — they are not counted in length.
+No emoji, no hashtags, no prices or phone numbers unless the user asked."""
+
+VOICE_SYS = f"""You write a short voice-over line spoken by the LAZA mascot.
+{BRAND}
+{VOICE}
+Return ONLY JSON: {{"text": "line in the target language", "ru": "Russian translation (same as text if Russian)"}}"""
+
+SCENES_SYS = f"""You are a director of short vertical ads (Reels/Shorts) starring the LAZA mascot.
+{BRAND}
+{CHARACTER}
+{VOICE}
+Make a storyboard of N scenes. For EACH scene write:
+- "title_ru": 2-5 words in Russian.
+- "image_prompt": English prompt (60-110 words) for an image editing model that receives mascot reference
+  images: one vertical 9:16 frame, setting, pose, emotion, lighting. Keep the mascot identical to references.
+  Medium shot: mascot about 55-65% of frame height, face and mouth clearly visible. No text except "LAZA" on
+  cap/sneakers. Consistent warm commercial look across all scenes. Real-looking environments (factory with
+  stainless steel equipment and trays of ice cream cubes, cozy office tasting table, etc.).
+- "motion_prompt": English prompt (50-100 words) for an image-to-video model animating that frame for the
+  given seconds, written as a timeline "0-1s: ... 1-4s: ...". Main action starts in the first second.
+  The mascot talks to the camera (mouth moving naturally) when the scene has a voice line. Camera calm.
+  Ice cream cubes stay dry, matte and rigid, no melting. End with "Keep the character design unchanged."
+- "voice": the line Laza says in this scene in the target language (or "" if no voice). It must fit the
+  scene seconds at ~13 chars/second (leave 0.5 s spare). Lines together tell one story; last scene ends with
+  a soft call to action (e.g. order / taste Laza).
+- "voice_ru": Russian translation of the voice line ("" if no voice).
+"summary_ru": 1-2 sentences in Russian about the whole video.
+Return ONLY JSON: {{"summary_ru": "...", "scenes": [{{"title_ru": "...", "image_prompt": "...",
+"motion_prompt": "...", "voice": "...", "voice_ru": "..."}}]}}"""
+
+
+async def voice_line(context: str, seconds: float, lang: str, image: Path | None = None) -> dict:
+    """Реплика Лазы для готового ролика."""
+    limit = int(seconds * 13)
+    text = (f"Target language: {'Uzbek (Latin)' if lang == 'uz' else 'Russian'}.\n"
+            f"The video lasts {seconds:.0f} s, so the line must be at most {limit} characters (without tags).\n"
+            f"What happens in the video / user idea: «{context or 'Лаза в ролике про мороженое Laza'}».")
+    res = await _ask(VOICE_SYS, [image] if image else [], text)
+    if not str(res.get("text", "")).strip():
+        raise ValueError("Пустая реплика")
+    return res
+
+
+async def storyboard(refs: list[Path], idea: str, n: int, sec: int, lang: str | None) -> dict:
+    """Раскадровка ролика из n сцен по sec секунд."""
+    target = {"ru": "Russian", "uz": "Uzbek (Latin script)"}.get(lang or "", "NO VOICE — leave voice fields empty")
+    text = (f"Images are mascot references. Scenes: exactly {n}, each {sec} seconds. "
+            f"Voice language: {target}.\nUser idea (Russian): «{idea}».")
+    res = await _ask(SCENES_SYS, refs[:2], text)
+    scenes = res.get("scenes") or []
+    if len(scenes) != n or not all(s.get("image_prompt") and s.get("motion_prompt") for s in scenes):
+        raise ValueError("Claude вернул неполную раскадровку")
+    if not lang:
+        for s in scenes:
+            s["voice"] = s["voice_ru"] = ""
     return res

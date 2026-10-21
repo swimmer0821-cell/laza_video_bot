@@ -1,10 +1,11 @@
 """SQLite: кто имеет доступ и сколько потрачено на генерации."""
+import json
 import sqlite3
 from contextlib import closing
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from config import ALLOWED_IDS, ADMIN_IDS, DB_PATH
+from config import ALLOWED_IDS, ADMIN_IDS, DB_PATH, DEFAULT_VOICE, SETTINGS_PATH
 
 TZ = ZoneInfo("Asia/Tashkent")
 
@@ -85,3 +86,21 @@ def report() -> str:
         lines += [f"• {n}: {k} шт., {s:.2f} $" for n, k, s in rows]
     lines.append("\nСуммы — оценка по ценам fal.ai. Точный остаток — на fal.ai → Billing.")
     return "\n".join(lines)
+
+
+def _settings() -> dict:
+    try:
+        return json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def get_voice() -> str:
+    """Голос Лазы (выбирает руководитель командой /voice)."""
+    return _settings().get("voice", DEFAULT_VOICE)
+
+
+def set_voice(name: str) -> None:
+    s = _settings()
+    s["voice"] = name
+    SETTINGS_PATH.write_text(json.dumps(s, ensure_ascii=False), encoding="utf-8")
