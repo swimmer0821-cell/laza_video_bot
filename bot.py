@@ -150,7 +150,8 @@ async def help_(msg: Message):
         lines += ["", "Для руководителя:", "/add id Имя — дать доступ", "/del id — убрать доступ",
                   "/users — список", "/refs — эталоны персонажа", "/ref_add — добавить эталон",
                   "/ref_reset — вернуть стандартные эталоны",
-                  f"/voice — голос Лазы (сейчас: {voice.engine('ru')})"]
+                  f"/voice — голос Лазы (сейчас: {voice.engine('ru')})",
+                  "/stress — ударение в имени Лаза (выбрать на слух)"]
     await msg.answer("\n".join(lines))
 
 
@@ -987,6 +988,52 @@ async def voice_set(cb: CallbackQuery):
     await cb.message.edit_reply_markup(reply_markup=None)
     await cb.answer()
     await cb.message.answer(f"✅ Голос Лазы ({LANGS[lang]}): {voice.engine(lang)}")
+
+
+STRESS_SAMPLES = {"ru": "Привет, я Лаза! Попробуй Лазу. Вкусная Лаза.",
+                  "uz": "Salom, men Laza! Laza'ni tatib ko'r. Mazali Laza."}
+
+
+@router.message(Command("stress"), Admin())
+async def stress_choose(msg: Message):
+    await msg.answer("Ударение в имени Лаза. Выберите язык — пришлю несколько вариантов произношения, "
+                     "выберите тот, где ударение на последнюю А.",
+                     reply_markup=kb([(LANGS["ru"], "stl:ru"), (LANGS["uz"], "stl:uz")]))
+
+
+@router.callback_query(F.data.startswith("stl:"), Allowed())
+async def stress_samples(cb: CallbackQuery):
+    if cb.from_user.id not in ADMIN_IDS:
+        await cb.answer("Только для руководителя", show_alert=True)
+        return
+    lang = cb.data.split(":")[1]
+    await cb.answer("Готовлю варианты")
+    cur = voice.stress_way(lang)
+    for way, title in voice.STRESS_WAYS[lang].items():
+        if way.startswith("ipa") and not voice.use_azure():
+            continue
+        try:
+            mp3 = await voice.speak(STRESS_SAMPLES[lang], lang, way=way)
+        except fal_api.GenError as e:
+            await cb.message.answer(f"⚠️ {title}: {e}")
+            continue
+        mark = "✅ " if way == cur else ""
+        await cb.message.answer_audio(FSInputFile(mp3, filename=f"{lang}_{way}.mp3"),
+                                      title=f"{mark}{title}", caption=f"{mark}{title} · {voice.engine(lang)}",
+                                      reply_markup=kb([("Выбрать этот", f"sts:{lang}:{way}")]))
+        media.cleanup(mp3)
+
+
+@router.callback_query(F.data.startswith("sts:"), Allowed())
+async def stress_set(cb: CallbackQuery):
+    if cb.from_user.id not in ADMIN_IDS:
+        await cb.answer("Только для руководителя", show_alert=True)
+        return
+    _, lang, way = cb.data.split(":")
+    db.set_setting(f"stress_{lang}", way)
+    await cb.answer("Сохранено")
+    await cb.message.answer(f"✅ {LANGS[lang]}: ударение — {voice.STRESS_WAYS[lang][way]}. "
+                            "Так будет во всех озвучках.")
 
 
 # ---------- Руководитель: доступ и эталоны ----------
