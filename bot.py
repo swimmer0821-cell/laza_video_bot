@@ -1030,7 +1030,7 @@ async def stress_set(cb: CallbackQuery):
         await cb.answer("Только для руководителя", show_alert=True)
         return
     _, lang, way = cb.data.split(":")
-    db.set_setting(f"stress_{lang}", way)
+    db.set_setting(f"stress2_{lang}", way)
     await cb.answer("Сохранено")
     await cb.message.answer(f"✅ {LANGS[lang]}: ударение — {voice.STRESS_WAYS[lang][way]}. "
                             "Так будет во всех озвучках.")

@@ -24,16 +24,16 @@ _IPA_RU2 = {"а": "laˈza", "у": "laˈzu", "ы": "laˈzɨ", "е": "laˈzʲe", "
 
 # способ → подпись. ipa* работают только в Azure.
 STRESS_WAYS = {
-    "ru": {"ipa": "произношение IPA (lɐˈza)", "ipa2": "произношение IPA (laˈza)", "mark": "знак ударения Лаза́",
+    "ru": {"loza": "через слово «лоза́» (звучит как лазА́)", "ipa": "произношение IPA (lɐˈza)", "ipa2": "произношение IPA (laˈza)", "mark": "знак ударения Лаза́",
            "dbl": "двойная буква Лазаа", "hyph": "через дефис Ла-за́", "plain": "как есть (без подсказки)"},
     "uz": {"plain": "как есть", "ipa": "произношение IPA (laˈza)", "mark": "знак ударения Lazá",
            "dbl": "двойная буква Lazaa"},
 }
-STRESS_DEFAULT = {"ru": "ipa", "uz": "plain"}
+STRESS_DEFAULT = {"ru": "loza", "uz": "plain"}
 
 
 def stress_way(lang: str) -> str:
-    return db.get_setting(f"stress_{lang}", STRESS_DEFAULT[lang])
+    return db.get_setting(f"stress2_{lang}", STRESS_DEFAULT[lang])
 
 
 def _mark_name(text: str, lang: str, way: str, azure: bool) -> str:
@@ -48,6 +48,9 @@ def _mark_name(text: str, lang: str, way: str, azure: bool) -> str:
             if way == "ipa" or way == "ipa2":
                 ipa = (_IPA_RU if way == "ipa" else _IPA_RU2)[v.lower()]
                 return f"<phoneme alphabet='ipa' ph='{ipa}'>{m.group(0)}</phoneme>"
+            if way == "loza":   # безударная «о» в русском звучит как «а»: лоза́ = [lɐˈza]
+                lo = ("Ло" if base[0].isupper() else "ло") + "з"
+                return lo + v.lower() + ACC + tail
             if way == "mark":
                 return base + v + ACC + tail
             if way == "dbl":
