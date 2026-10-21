@@ -196,3 +196,60 @@ async def dims(video: Path) -> tuple[int, int]:
                      "-of", "csv=p=0", str(video))
     w, h = (int(x) for x in out.strip().split(",")[:2])
     return w, h
+
+
+def _font() -> str | None:
+    """Жирный шрифт с кириллицей (для текста-хука на видео)."""
+    import shutil as _sh
+    import subprocess
+    for name in ("DejaVu Sans:bold", "Liberation Sans:bold", "Noto Sans:bold", "sans:bold"):
+        if not _sh.which("fc-match"):
+            break
+        try:
+            f = subprocess.run(["fc-match", "-f", "%{file}", name], capture_output=True, text=True, timeout=5).stdout
+        except Exception:  # noqa: BLE001
+            continue
+        if f and Path(f).exists():
+            return f
+    for f in ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+              "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"):
+        if Path(f).exists():
+            return f
+    return None
+
+
+def _wrap(text: str, width: int = 18) -> str:
+    words, lines, cur = text.split(), [], ""
+    for w in words:
+        if cur and len(cur) + 1 + len(w) > width:
+            lines.append(cur)
+            cur = w
+        else:
+            cur = f"{cur} {w}".strip()
+    if cur:
+        lines.append(cur)
+    return "\n".join(lines[:3])
+
+
+async def overlay_hook(video: Path, text: str, until: float = 2.8) -> Path:
+    """Крупный текст-хук вверху кадра в первые секунды (смотрят без звука). Нет шрифта — видео как есть."""
+    text = text.strip()
+    font = _font()
+    if not text or not font:
+        return video
+    tf = new_path("txt")
+    tf.write_text(_wrap(text), encoding="utf-8")
+    alpha = f"if(lt(t\\,{until - 0.3:.2f})\\,1\\,max(0\\,({until:.2f}-t)/0.3))"
+    vf = (f"drawtext=fontfile='{font}':textfile='{tf}':fontsize=74:fontcolor=white:line_spacing=12:"
+          f"box=1:boxcolor=black@0.55:boxborderw=26:x=(w-text_w)/2:y=h*0.11:"
+          f"enable='lt(t\\,{until:.2f})':alpha='{alpha}'")
+    dst = new_path("mp4")
+    try:
+        await _run("ffmpeg", "-y", "-loglevel", "error", "-i", str(video), "-vf", vf, "-c:v", "libx264",
+                   "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", "-c:a", "copy",
+                   "-movflags", "+faststart", str(dst))
+    except RuntimeError:
+        return video
+    finally:
+        cleanup(tf)
+    return dst

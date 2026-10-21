@@ -35,6 +35,8 @@ Rules:
   The main action from the user idea must START within the first second and FINISH at least 1 second before
   the end of the part. No long establishing shots or slow intros. For a 5-second part use at most ONE main
   action; if the idea has more actions than fit, keep the most important one and say so in summary_ru.
+- HOOK: the first second must already be the most striking moment (motion, crunch, close-up) — viewers
+  decide in 2 seconds whether to keep watching. No slow start.
 - When hands are needed, they enter the frame at 0s already close to the product.
 - Camera: if there is an action, keep the camera almost static (very slight push-in at most).
 - Always end each prompt with: "Ice cream pieces stay dry, matte and rigid, no melting, no liquid, no morphing."
@@ -125,28 +127,52 @@ VOICE_SYS = f"""You write a short voice-over line spoken by the LAZA mascot.
 {VOICE}
 Return ONLY JSON: {{"text": "line in the target language", "ru": "Russian translation (same as text if Russian)"}}"""
 
-SCENES_SYS = f"""You are a director of short vertical ads (Reels/Shorts) starring the LAZA mascot.
+SCENES_SYS = f"""You are a director of short vertical ads (Instagram Reels / YouTube Shorts) starring the LAZA mascot.
 {BRAND}
 {CHARACTER}
 {VOICE}
+HOW SHORT VIDEOS WIN (follow strictly):
+- The first 2 seconds decide everything. Scene 1 opens IN the action — no greeting, no "hi, I'm Laza",
+  no logo, no slow intro. The hook fires on 3 channels at once: a striking first frame, the first spoken
+  words, and a short on-screen text. Most people watch muted, so the on-screen text alone must hook.
+- A hook opens a gap the viewer needs to close (curiosity, surprise, stakes, a specific number, a myth,
+  identity "if you love ice cream…", a challenge). It must be TRUE — the video must pay it off.
+  Allowed facts only: real ice cream from natural cream, freeze-dried, does not melt, crunchy, light,
+  made in Uzbekistan by the producer (no middlemen). Never invent numbers, awards, prices or claims.
+- One idea per video. Every scene changes the picture (new action or angle) — no static talking.
+- Open a loop early, pay it off at the end. The last scene ends on a soft CTA and, if possible, a beat
+  that makes the viewer want to rewatch or send it to a friend ("send this to someone who…").
+- Think: who would DM this video to whom, and why? Build that reason in.
 Make a storyboard of N scenes. For EACH scene write:
 - "title_ru": 2-5 words in Russian.
 - "image_prompt": English prompt (60-110 words) for an image editing model that receives mascot reference
-  images: one vertical 9:16 frame, setting, pose, emotion, lighting. Keep the mascot identical to references.
-  Medium shot: mascot about 55-65% of frame height, face and mouth clearly visible. No text except "LAZA" on
-  cap/sneakers. Consistent warm commercial look across all scenes. Real-looking environments (factory with
-  stainless steel equipment and trays of ice cream cubes, cozy office tasting table, etc.).
-- "motion_prompt": English prompt (50-100 words) for an image-to-video model animating that frame for the
-  given seconds, written as a timeline "0-1s: ... 1-4s: ...". Main action starts in the first second.
-  The mascot talks to the camera (mouth moving naturally) when the scene has a voice line. Camera calm.
-  Ice cream cubes stay dry, matte and rigid, no melting. End with "Keep the character design unchanged."
+  images: one vertical 9:16 frame, setting, pose, emotion, lighting. Keep the mascot identical to references
+  (same body shape and proportions, not wider, not stretched). Medium shot: mascot about 55-65% of frame
+  height, face and mouth clearly visible. No text except "LAZA" on cap/sneakers. Consistent warm commercial
+  look across scenes. Real-looking environments. Scene 1 frame must be visually striking (bold action,
+  close-up, unexpected moment) and leave the top 25% of the frame calm for on-screen text.
+- "motion_prompt": English prompt (50-100 words) animating that frame for the given seconds, as a timeline
+  "0-1s: ... 1-4s: ...". Main action starts in the first second. When the scene has a voice line the mascot
+  talks to the camera with natural gestures. Camera calm. Ice cream cubes stay dry, matte and rigid,
+  no melting. End with "Keep the character design and body proportions unchanged."
 - "voice": the line Laza says in this scene in the target language (or "" if no voice). It must fit the
-  scene seconds at ~13 chars/second (leave 0.5 s spare). Lines together tell one story; last scene ends with
-  a soft call to action (e.g. order / taste Laza).
+  scene seconds at ~13 chars/second minus 0.5 s. Scene 1 voice STARTS with the spoken hook.
 - "voice_ru": Russian translation of the voice line ("" if no voice).
+Also write:
+- "hooks": exactly 3 alternative hooks for scene 1, each on a DIFFERENT mechanism, best first:
+  {{"mechanism_ru": "2-3 words in Russian (e.g. «миф», «интрига», «вызов»)",
+    "overlay": "on-screen text, max 6 words, in the voice language (Russian if no voice), no emoji",
+    "voice": "full scene-1 voice line starting with this hook (same length rule; \"\" if no voice)",
+    "voice_ru": "its Russian translation"}}. hooks[0] must equal scene 1 voice.
+- "caption": Instagram caption in the voice language (Russian if no voice): first sentence ≤ 120 chars with
+  the main keyword (e.g. сублимированное мороженое / sublimatsiya qilingan muzqaymoq) and a reason to watch,
+  then 1-2 short lines, a soft CTA to order. No fake claims.
+- "hashtags": 3-5 relevant hashtags (strings with #).
+- "sends_ru": one short sentence in Russian — who would send this to whom and why.
 "summary_ru": 1-2 sentences in Russian about the whole video.
-Return ONLY JSON: {{"summary_ru": "...", "scenes": [{{"title_ru": "...", "image_prompt": "...",
-"motion_prompt": "...", "voice": "...", "voice_ru": "..."}}]}}"""
+Return ONLY JSON: {{"summary_ru": "...", "hooks": [...], "scenes": [{{"title_ru": "...", "image_prompt": "...",
+"motion_prompt": "...", "voice": "...", "voice_ru": "..."}}], "caption": "...", "hashtags": [...],
+"sends_ru": "..."}}"""
 
 
 async def voice_line(context: str, seconds: float, lang: str, image: Path | None = None) -> dict:
@@ -173,4 +199,12 @@ async def storyboard(refs: list[Path], idea: str, n: int, sec: int, lang: str | 
     if not lang:
         for s in scenes:
             s["voice"] = s["voice_ru"] = ""
+    hooks = [h for h in (res.get("hooks") or []) if isinstance(h, dict) and h.get("overlay")][:3]
+    for h in hooks:
+        if not lang:
+            h["voice"] = h["voice_ru"] = ""
+    if not hooks:
+        hooks = [{"mechanism_ru": "", "overlay": "", "voice": scenes[0].get("voice", ""),
+                  "voice_ru": scenes[0].get("voice_ru", "")}]
+    res["hooks"] = hooks
     return res

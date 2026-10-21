@@ -1,5 +1,6 @@
 """Бот «LAZA Видео»: ролики из фото товара и персонаж Лаза. Генерация — fal.ai, промты — Claude."""
 import asyncio
+import html
 import logging
 import re
 import shutil
@@ -758,7 +759,7 @@ async def sc_ask_len(msg: Message, state: FSMContext):
     rows = []
     for total, (n, sec) in SCENE_PLANS.items():
         img, vid, _ = scenes_price(total, "ru")
-        rows.append([(f"{total} с · {n} сцены по {sec} с — ≈ {usd(img + vid)}", f"sclen:{total}")])
+        rows.append([(f"{total} с · {n} сцен по {sec} с — ≈ {usd(img + vid)}", f"sclen:{total}")])
     await msg.answer("Длина ролика? (сцены с голосом — Kling Avatar, губы точно по звуку; цена с картинками)", reply_markup=kb(*rows))
 
 
@@ -792,8 +793,23 @@ async def sc_plan(msg: Message, state: FSMContext):
         log.exception("Ошибка раскадровки")
         await msg.edit_text("⚠️ Не получилось написать сценарий.", reply_markup=kb([("🔁 Ещё раз", "scplan")]))
         return
+    sb["hook_i"] = 0
+    await state.update_data(sc_board=sb, sc_imgs=[])
+    await show_plan(msg, state)
+
+
+def plan_text(sb: dict, total: int, lang: str | None) -> str:
+    n, sec = SCENE_PLANS[total]
     img, vid, vo = scenes_price(total, lang)
+    hooks, hi = sb.get("hooks") or [], sb.get("hook_i", 0)
     lines = [f"🎞 {sb.get('summary_ru', '')}", ""]
+    if hooks and hooks[hi].get("overlay"):
+        h = hooks[hi]
+        lines.append(f"🎣 Хук (первые 2 с, {h.get('mechanism_ru', '')}): «{h['overlay']}»")
+        others = [f"  {j + 1}) {o.get('mechanism_ru', '')}: «{o['overlay']}»" for j, o in enumerate(hooks) if j != hi]
+        if others:
+            lines += ["Другие хуки:"] + others
+        lines.append("")
     for i, s in enumerate(sb["scenes"], 1):
         line = f"{i}. {s.get('title_ru', '')} ({sec} с)"
         if s.get("voice"):
@@ -801,13 +817,43 @@ async def sc_plan(msg: Message, state: FSMContext):
             if lang != "ru" and s.get("voice_ru"):
                 line += f"\n   ({s['voice_ru']})"
         lines.append(line)
+    if sb.get("sends_ru"):
+        lines += ["", f"📨 Зачем перешлют: {sb['sends_ru']}"]
     lines += ["", f"Шаг 1 — картинки сцен: ≈ {usd(img)}",
               f"Шаг 2 — оживление и монтаж: ≈ {usd(vid + vo)}",
               "После картинок можно перерисовать любую сцену до оживления."]
-    await state.update_data(sc_board=sb, sc_imgs=[])
-    await msg.edit_text("\n".join(lines), reply_markup=kb([(f"🎨 Нарисовать сцены — ≈ {usd(img)}", "scdraw")],
-                                                           [("🔁 Другой сценарий", "scplan"),
-                                                            ("❌ Отмена", "cancel")]))
+    return "\n".join(lines)
+
+
+async def show_plan(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    sb, total, lang = data["sc_board"], data["sc_total"], data.get("sc_lang") or None
+    img, _, _ = scenes_price(total, lang)
+    hooks, hi = sb.get("hooks") or [], sb.get("hook_i", 0)
+    hook_row = [(f"🎣 Хук {j + 1}", f"schook:{j}") for j in range(len(hooks)) if j != hi and hooks[j].get("overlay")]
+    rows = [[(f"🎨 Нарисовать сцены — ≈ {usd(img)}", "scdraw")]]
+    if hook_row:
+        rows.append(hook_row)
+    rows.append([("🔁 Другой сценарий", "scplan"), ("❌ Отмена", "cancel")])
+    await msg.edit_text(plan_text(sb, total, lang), reply_markup=kb(*rows))
+
+
+@router.callback_query(F.data.startswith("schook:"), Allowed())
+async def sc_hook(cb: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    sb = data.get("sc_board")
+    j = int(cb.data.split(":")[1])
+    if not sb or j >= len(sb.get("hooks") or []):
+        await cb.answer("Начните заново через меню", show_alert=True)
+        return
+    h = sb["hooks"][j]
+    sb["hook_i"] = j
+    if h.get("voice"):
+        sb["scenes"][0]["voice"] = h["voice"]
+        sb["scenes"][0]["voice_ru"] = h.get("voice_ru", "")
+    await state.update_data(sc_board=sb)
+    await cb.answer(f"Хук {j + 1}")
+    await show_plan(cb.message, state)
 
 
 @router.callback_query(F.data == "scplan", Allowed())
@@ -916,28 +962,30 @@ async def run_scenes(bot: Bot, chat_id: int, user, data: dict, state: FSMContext
     status = await bot.send_message(chat_id, "⏳ Начинаю…")
     log.info("Сцены старт %s: %s с, язык %s", user.id, total, lang)
     try:
-        clips, voices = [], []
-        for i, (s, img) in enumerate(zip(scenes, imgs), 1):
+        voices: list = []
+        await status.edit_text(f"🎬 Оживляю {n} сцен сразу (обычно 3–8 минут). Можно пользоваться ботом.")
+
+        async def one(i: int, s: dict, img: str) -> Path:
             img_url = await fal_api.upload(Path(img))
             if lang and s.get("voice"):
-                await status.edit_text(f"🗣 Сцена {i} из {n}: голос и губы… (2–5 минут каждая). "
-                                       "Можно пользоваться ботом.")
                 mp3 = await make_voice(s["voice"], lang)
                 temp.append(mp3)
                 db.log_gen(user.id, user.full_name, "voice", "tts", 0, tts_price(s["voice"]), "ok")
                 aud = await media.scene_audio(mp3, 0.2, sec)
                 temp.append(aud)
-                voices.append((aud, (i - 1) * sec, sec))
+                voices.append((aud, i * sec, sec))
                 prompt = (s["motion_prompt"] + " The character talks to the camera, lips precisely synced to the "
                           "speech, lively facial expressions and natural hand gestures. Keep the character design, "
                           "body proportions and the scene unchanged.")[:2400]
                 url = await fal_api.avatar(img_url, await fal_api.upload(aud), prompt)
             else:
-                await status.edit_text(f"⏳ Оживляю сцену {i} из {n}… (2–5 минут каждая). Можно пользоваться ботом.")
                 url = await fal_api.video_part(m, img_url, s["motion_prompt"], sec)
             clip = await media.download(url, "mp4")
-            clips.append(clip)
             temp.append(clip)
+            return clip
+
+        clips = list(await asyncio.gather(*(one(i, s, img) for i, (s, img) in enumerate(zip(scenes, imgs)))))
+        voices.sort(key=lambda v: v[1])
         await status.edit_text("🎞 Монтирую…")
         joined = await media.concat(clips, keep_audio=False)
         temp.append(joined)
@@ -948,13 +996,24 @@ async def run_scenes(bot: Bot, chat_id: int, user, data: dict, state: FSMContext
             temp.append(track)
             final = await media.mux_voice(joined, track)
             temp.append(final)
-        await remember(state, user.id, joined, "scenes", data["sc_board"].get("summary_ru", ""), track)
+        sb = data["sc_board"]
+        hook = (sb.get("hooks") or [{}])[sb.get("hook_i", 0)].get("overlay", "")
+        hooked = await media.overlay_hook(final, hook)
+        if hooked != final:
+            temp.append(hooked)
+            final = hooked
+        await remember(state, user.id, joined, "scenes", sb.get("summary_ru", ""), track)
         out = await media.fit_telegram(final)
         temp.append(out)
         sec_total = await media.duration(out)
         markup = after_voice_kb("scenes", sec_total) if track else kb([("🔊 Озвучить", "voice")])
         await send_vid(bot, chat_id, FSInputFile(out, filename="laza_scenes.mp4"), supports_streaming=True,
-                             caption=f"✅ Ролик с Лазой, {total} с, {n} сцены", reply_markup=markup)
+                             caption=f"✅ Ролик с Лазой, {total} с, {n} сцен", reply_markup=markup)
+        if sb.get("caption"):
+            tags = " ".join(t if t.startswith("#") else "#" + t for t in (sb.get("hashtags") or []))
+            await bot.send_message(chat_id, "📝 Подпись для Instagram (нажмите, чтобы скопировать):\n\n"
+                                            f"<code>{html.escape(sb['caption'] + (chr(10) * 2 + tags if tags else ''))}</code>",
+                                   parse_mode="HTML")
         log.info("Сцены готовы %s", user.id)
     except fal_api.GenError as e:
         await bot.send_message(chat_id, f"⚠️ {e}")

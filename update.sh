@@ -9,6 +9,7 @@ git fetch -q origin main
 git reset -q --hard origin/main
 echo "== Версия: $(git log -1 --format='%h %ad %s' --date=format:'%d.%m.%Y %H:%M')"
 echo "== Библиотеки"
+fc-list 2>/dev/null | grep -qi dejavu || apt-get install -y -qq fonts-dejavu-core >/dev/null 2>&1 || true
 [ -d .venv ] || python3 -m venv .venv
 .venv/bin/pip install -q -r requirements.txt
 .venv/bin/python fix_env.py || true
