@@ -97,10 +97,10 @@ def _settings() -> dict:
 
 def get_voice() -> str:
     """Голос Лазы (выбирает руководитель командой /voice)."""
-    return _settings().get("voice", DEFAULT_VOICE)
+    return _settings().get("voice2", DEFAULT_VOICE)   # voice2: с 21.10.2026 по умолчанию Liam
 
 
 def set_voice(name: str) -> None:
     s = _settings()
-    s["voice"] = name
+    s["voice2"] = name
     SETTINGS_PATH.write_text(json.dumps(s, ensure_ascii=False), encoding="utf-8")

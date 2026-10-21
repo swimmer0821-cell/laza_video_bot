@@ -113,7 +113,8 @@ async def image_prompt(refs: list[Path], product: Path | None, idea: str) -> dic
 
 VOICE = """Laza's voice and personality: a cheerful, friendly, slightly mischievous young character, proud of
 "real ice cream without middlemen", speaks simply, warmly, with energy. Speaks to the viewer as a friend.
-Russian: natural modern spoken Russian, «ты»-форма. Uzbek: natural spoken Uzbek in LATIN script
+Russian: natural modern spoken Russian, «ты»-форма. Write the name in Cyrillic: «Лаза» (stress on the last
+syllable is added automatically). Uzbek: natural spoken Uzbek in LATIN script
 (o', g', sh, ch), «sen» form, no Russian words except brand names.
 Speech rate ~13 characters per second. You may add at most 2 ElevenLabs v3 audio tags in English square
 brackets for emotion, e.g. [excited], [laughs], [whispers], [cheerfully] — they are not counted in length.

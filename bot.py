@@ -18,6 +18,7 @@ import db
 import fal_api
 import media
 import prompts
+import voice
 from config import (ADMIN_IDS, BOT_TOKEN, DAILY_LIMIT_USD, DATA_DIR, DURATIONS, IMAGE_PRICE_USD, LANGS,
                     LIPSYNC_USD_PER_SEC, LOG_DIR, REFS_CUSTOM_DIR, REFS_DEFAULT_DIR, SCENE_MODEL, SCENE_PLANS,
                     SCENE_TEMPLATE, TTS_USD_PER_1K, VIDEO_MODELS, VOICE_CHOICES)
@@ -567,7 +568,7 @@ async def voice_confirm(msg: Message, state: FSMContext, text: str, ru: str):
     warn = (f"\n⚠️ Реплика (~{est:.0f} с) длиннее ролика ({sec:.0f} с): последний кадр продлится."
             if est > sec + 0.5 else "")
     tr = f"\nПеревод: {ru}" if ru and lang != "ru" and ru != text else ""
-    await msg.answer(f"🔊 {LANGS[lang]}, голос {db.get_voice()}:\n«{shown(text)}»{tr}\n\n"
+    await msg.answer(f"🔊 {LANGS[lang]}, голос {voice.engine(lang)}:\n«{shown(text)}»{tr}\n\n"
                      f"Звучит ≈ {est:.0f} с. Цена ≈ {usd(tts_price(text))}{warn}",
                      reply_markup=kb([("✅ Озвучить", "vgo")],
                                      [("🎲 Другой текст", "vtext:auto"), ("✍️ Свой текст", "vtext:own")]))
@@ -589,8 +590,7 @@ async def voice_go(cb: CallbackQuery, state: FSMContext, bot: Bot):
 
 
 async def make_voice(text: str, lang: str) -> Path:
-    url = await fal_api.tts(text, lang, db.get_voice())
-    return await media.download(url, "mp3")
+    return await voice.speak(text, lang)
 
 
 def after_voice_kb(kind: str, seconds: float) -> InlineKeyboardMarkup:
@@ -936,8 +936,25 @@ async def run_scenes(bot: Bot, chat_id: int, user, data: dict, state: FSMContext
 @router.message(Command("voice"), Admin())
 async def voice_choose(msg: Message):
     rows = [[(("✅ " if v == db.get_voice() else "") + v, f"vsample:{v}")] for v in VOICE_CHOICES]
-    await msg.answer(f"Голос Лазы сейчас: {db.get_voice()}.\nНажмите на голос — пришлю пример (≈ 0,01 $), "
-                     "затем кнопкой выберите его.", reply_markup=kb(*rows))
+    await msg.answer(f"Голос Лазы (русский): {db.get_voice()}.\nУзбекский: {voice.uz_engine()}.\n"
+                     "Нажмите на голос — пришлю пример (≈ 0,01 $), затем кнопкой выберите его.",
+                     reply_markup=kb(*rows, [("🇺🇿 Пример на узбекском", "vsample_uz")]))
+
+
+@router.callback_query(F.data == "vsample_uz", Allowed())
+async def voice_sample_uz(cb: CallbackQuery):
+    if cb.from_user.id not in ADMIN_IDS:
+        await cb.answer("Только для руководителя", show_alert=True)
+        return
+    await cb.answer("Готовлю пример")
+    try:
+        mp3 = await voice.speak("[excited] Salom! Men Laza — haqiqiy sublimatsiya qilingan muzqaymoq. "
+                                "Laza'ni tatib ko'r!", "uz")
+        db.log_gen(cb.from_user.id, cb.from_user.full_name, "voice", "uz", 0, 0.01, "ok")
+        await cb.message.answer_audio(FSInputFile(mp3, filename="uz.mp3"), title=f"Узбекский: {voice.uz_engine()}")
+        media.cleanup(mp3)
+    except fal_api.GenError as e:
+        await cb.message.answer(f"⚠️ {e}")
 
 
 @router.callback_query(F.data.startswith("vsample:"), Allowed())
@@ -948,8 +965,8 @@ async def voice_sample(cb: CallbackQuery):
     name = cb.data.split(":", 1)[1]
     await cb.answer("Готовлю пример")
     try:
-        url = await fal_api.tts("[excited] Привет! Я Лаза — настоящее сублимированное мороженое. Salom, men Lazaman!",
-                                "ru", name)
+        url = await fal_api.tts(voice.stress_ru("[excited] Привет! Я Лаза — настоящее сублимированное мороженое. "
+                                                "Попробуй Лазу!"), "ru", name)
         mp3 = await media.download(url, "mp3")
         db.log_gen(cb.from_user.id, cb.from_user.full_name, "voice", "eleven-v3", 0, 0.01, "ok")
         await cb.message.answer_audio(FSInputFile(mp3, filename=f"{name}.mp3"), title=f"Голос {name}",

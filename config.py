@@ -85,9 +85,15 @@ DURATIONS = [5, 10, 15, 30]
 # Озвучка: ElevenLabs v3 (русский и узбекский), $0.10 за 1000 символов
 TTS_MODEL = "fal-ai/elevenlabs/tts/eleven-v3"
 TTS_USD_PER_1K = 0.10
-DEFAULT_VOICE = os.getenv("LAZA_VOICE", "Charlie")
-VOICE_CHOICES = ["Charlie", "Liam", "Will", "Callum", "Lily", "Jessica"]   # из встроенных голосов ElevenLabs
+DEFAULT_VOICE = os.getenv("LAZA_VOICE", "Liam")
+VOICE_CHOICES = ["Liam", "Charlie", "Will", "Callum", "Lily", "Jessica"]   # из встроенных голосов ElevenLabs
 LANGS = {"ru": "🇷🇺 Русский", "uz": "🇺🇿 O'zbekcha"}
+
+# Узбекский без акцента: Microsoft Azure, голос носителя языка (бесплатно до 500 000 символов в месяц).
+# Пока ключа нет — узбекский озвучивает ElevenLabs тем же голосом, что и русский.
+AZURE_SPEECH_KEY = os.getenv("AZURE_SPEECH_KEY", "")
+AZURE_SPEECH_REGION = os.getenv("AZURE_SPEECH_REGION", "westeurope")
+AZURE_UZ_VOICE = os.getenv("AZURE_UZ_VOICE", "uz-UZ-SardorNeural")
 
 # Синхронизация губ: sync.so lipsync-2, $3 за минуту
 LIPSYNC_MODEL = "fal-ai/sync-lipsync/v2"
