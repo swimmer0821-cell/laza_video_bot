@@ -20,7 +20,7 @@ import media
 import prompts
 import voice
 from config import (ADMIN_IDS, BOT_TOKEN, DAILY_LIMIT_USD, DATA_DIR, DURATIONS, IMAGE_PRICE_USD, LANGS,
-                    LIPSYNC_USD_PER_SEC, LOG_DIR, REFS_CUSTOM_DIR, REFS_DEFAULT_DIR, SCENE_MODEL, SCENE_PLANS,
+                    LIPSYNC_USD_PER_SEC, LOG_DIR, AZURE_VOICES, REFS_CUSTOM_DIR, REFS_DEFAULT_DIR, SCENE_MODEL, SCENE_PLANS,
                     SCENE_TEMPLATE, TTS_USD_PER_1K, VIDEO_MODELS, VOICE_CHOICES)
 
 # ---------- Лог: в файл (5 МБ × 3) и в консоль ----------
@@ -150,7 +150,7 @@ async def help_(msg: Message):
         lines += ["", "Для руководителя:", "/add id Имя — дать доступ", "/del id — убрать доступ",
                   "/users — список", "/refs — эталоны персонажа", "/ref_add — добавить эталон",
                   "/ref_reset — вернуть стандартные эталоны",
-                  f"/voice — голос Лазы (сейчас: {db.get_voice()})"]
+                  f"/voice — голос Лазы (сейчас: {voice.engine('ru')})"]
     await msg.answer("\n".join(lines))
 
 
@@ -933,28 +933,26 @@ async def run_scenes(bot: Bot, chat_id: int, user, data: dict, state: FSMContext
 
 
 # ---------- Руководитель: голос Лазы ----------
+SAMPLES = {"ru": "Привет! Я Лаза — настоящее сублимированное мороженое без посредников. Попробуй Лазу!",
+           "uz": "Salom! Men Laza — vositachilarsiz haqiqiy sublimatsiya qilingan muzqaymoq. Laza'ni tatib ko'r!"}
+
+
 @router.message(Command("voice"), Admin())
 async def voice_choose(msg: Message):
-    rows = [[(("✅ " if v == db.get_voice() else "") + v, f"vsample:{v}")] for v in VOICE_CHOICES]
-    await msg.answer(f"Голос Лазы (русский): {db.get_voice()}.\nУзбекский: {voice.uz_engine()}.\n"
-                     "Нажмите на голос — пришлю пример (≈ 0,01 $), затем кнопкой выберите его.",
-                     reply_markup=kb(*rows, [("🇺🇿 Пример на узбекском", "vsample_uz")]))
-
-
-@router.callback_query(F.data == "vsample_uz", Allowed())
-async def voice_sample_uz(cb: CallbackQuery):
-    if cb.from_user.id not in ADMIN_IDS:
-        await cb.answer("Только для руководителя", show_alert=True)
+    if voice.use_azure():
+        rows = []
+        for lang in ("ru", "uz"):
+            cur = voice.azure_voice(lang)
+            rows.append([(("✅ " if v == cur else "") + f"{LANGS[lang][:2]} {t}", f"vsample:az:{lang}:{v}")
+                         for t, v in AZURE_VOICES[lang].items()])
+        await msg.answer(f"Голос Лазы (Azure, носители языка):\nрусский — {voice.azure_title('ru')}\n"
+                         f"узбекский — {voice.azure_title('uz')}\n\nНажмите на голос — пришлю пример "
+                         "(бесплатно), затем кнопкой выберите его.", reply_markup=kb(*rows))
         return
-    await cb.answer("Готовлю пример")
-    try:
-        mp3 = await voice.speak("[excited] Salom! Men Laza — haqiqiy sublimatsiya qilingan muzqaymoq. "
-                                "Laza'ni tatib ko'r!", "uz")
-        db.log_gen(cb.from_user.id, cb.from_user.full_name, "voice", "uz", 0, 0.01, "ok")
-        await cb.message.answer_audio(FSInputFile(mp3, filename="uz.mp3"), title=f"Узбекский: {voice.uz_engine()}")
-        media.cleanup(mp3)
-    except fal_api.GenError as e:
-        await cb.message.answer(f"⚠️ {e}")
+    rows = [[(("✅ " if v == db.get_voice() else "") + v, f"vsample:el:ru:{v}")] for v in VOICE_CHOICES]
+    await msg.answer(f"Голос Лазы: ElevenLabs · {db.get_voice()} (узбекский с акцентом).\n"
+                     "Чтобы говорил без акцента, добавьте ключ Azure (AZURE_SPEECH_KEY в .env).\n"
+                     "Нажмите на голос — пришлю пример (≈ 0,01 $).", reply_markup=kb(*rows))
 
 
 @router.callback_query(F.data.startswith("vsample:"), Allowed())
@@ -962,15 +960,15 @@ async def voice_sample(cb: CallbackQuery):
     if cb.from_user.id not in ADMIN_IDS:
         await cb.answer("Только для руководителя", show_alert=True)
         return
-    name = cb.data.split(":", 1)[1]
+    _, eng, lang, name = cb.data.split(":", 3)
     await cb.answer("Готовлю пример")
     try:
-        url = await fal_api.tts(voice.stress_ru("[excited] Привет! Я Лаза — настоящее сублимированное мороженое. "
-                                                "Попробуй Лазу!"), "ru", name)
-        mp3 = await media.download(url, "mp3")
-        db.log_gen(cb.from_user.id, cb.from_user.full_name, "voice", "eleven-v3", 0, 0.01, "ok")
-        await cb.message.answer_audio(FSInputFile(mp3, filename=f"{name}.mp3"), title=f"Голос {name}",
-                                      reply_markup=kb([(f"Выбрать {name}", f"vset:{name}")]))
+        mp3 = await voice.speak(SAMPLES[lang], lang, name)
+        if eng == "el":
+            db.log_gen(cb.from_user.id, cb.from_user.full_name, "voice", "eleven-v3", 0, 0.01, "ok")
+        title = next((t for t, v in AZURE_VOICES[lang].items() if v == name), name) if eng == "az" else name
+        await cb.message.answer_audio(FSInputFile(mp3, filename=f"{lang}.mp3"), title=f"{LANGS[lang]} · {title}",
+                                      reply_markup=kb([(f"Выбрать {title}", f"vset:{eng}:{lang}:{name}")]))
         media.cleanup(mp3)
     except fal_api.GenError as e:
         await cb.message.answer(f"⚠️ {e}")
@@ -981,11 +979,14 @@ async def voice_set(cb: CallbackQuery):
     if cb.from_user.id not in ADMIN_IDS:
         await cb.answer("Только для руководителя", show_alert=True)
         return
-    name = cb.data.split(":", 1)[1]
-    db.set_voice(name)
+    _, eng, lang, name = cb.data.split(":", 3)
+    if eng == "az":
+        db.set_setting(f"azure_{lang}", name)
+    else:
+        db.set_voice(name)
     await cb.message.edit_reply_markup(reply_markup=None)
     await cb.answer()
-    await cb.message.answer(f"✅ Голос Лазы: {name}")
+    await cb.message.answer(f"✅ Голос Лазы ({LANGS[lang]}): {voice.engine(lang)}")
 
 
 # ---------- Руководитель: доступ и эталоны ----------

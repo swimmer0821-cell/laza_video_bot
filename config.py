@@ -93,7 +93,14 @@ LANGS = {"ru": "🇷🇺 Русский", "uz": "🇺🇿 O'zbekcha"}
 # Пока ключа нет — узбекский озвучивает ElevenLabs тем же голосом, что и русский.
 AZURE_SPEECH_KEY = os.getenv("AZURE_SPEECH_KEY", "")
 AZURE_SPEECH_REGION = os.getenv("AZURE_SPEECH_REGION", "westeurope")
-AZURE_UZ_VOICE = os.getenv("AZURE_UZ_VOICE", "uz-UZ-SardorNeural")
+AZURE_VOICES = {   # голоса-носители языка: код языка → {название: голос Azure}
+    "ru": {"Dmitry (муж.)": "ru-RU-DmitryNeural", "Dariya (жен.)": "ru-RU-DariyaNeural",
+           "Svetlana (жен.)": "ru-RU-SvetlanaNeural"},
+    "uz": {"Sardor (муж.)": "uz-UZ-SardorNeural", "Madina (жен.)": "uz-UZ-MadinaNeural"},
+}
+AZURE_DEFAULT = {"ru": "ru-RU-DmitryNeural", "uz": "uz-UZ-SardorNeural"}
+AZURE_PITCH = os.getenv("AZURE_PITCH", "+6%")   # чуть выше — голос моложе, как у мультперсонажа
+AZURE_RATE = os.getenv("AZURE_RATE", "+4%")
 
 # Синхронизация губ: sync.so lipsync-2, $3 за минуту
 LIPSYNC_MODEL = "fal-ai/sync-lipsync/v2"

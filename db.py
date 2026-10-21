@@ -104,3 +104,13 @@ def set_voice(name: str) -> None:
     s = _settings()
     s["voice2"] = name
     SETTINGS_PATH.write_text(json.dumps(s, ensure_ascii=False), encoding="utf-8")
+
+
+def get_setting(key: str, default: str) -> str:
+    return _settings().get(key, default)
+
+
+def set_setting(key: str, value: str) -> None:
+    s = _settings()
+    s[key] = value
+    SETTINGS_PATH.write_text(json.dumps(s, ensure_ascii=False), encoding="utf-8")
