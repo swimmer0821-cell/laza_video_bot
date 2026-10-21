@@ -77,11 +77,11 @@ async def has_audio(video: Path) -> bool:
     return bool(out.strip())
 
 
-async def concat(videos: list[Path]) -> Path:
+async def concat(videos: list[Path], keep_audio: bool = True) -> Path:
     """Склеивает части в один ролик 1080×1920 (звук сохраняется, если он есть во всех частях)."""
-    if len(videos) == 1:
+    audio = keep_audio and all([await has_audio(v) for v in videos])
+    if len(videos) == 1 and (audio or not await has_audio(videos[0])):
         return videos[0]
-    audio = all([await has_audio(v) for v in videos])
     args = ["ffmpeg", "-y", "-loglevel", "error"]
     for v in videos:
         args += ["-i", str(v)]
@@ -177,3 +177,22 @@ def cleanup(*paths: Path) -> None:
             p.unlink(missing_ok=True)
         except OSError:
             pass
+
+
+async def scene_audio(src: Path, delay: float, total: float) -> Path:
+    """Голос сцены ровно на total секунд: пауза delay в начале, тишина в конце."""
+    dst = new_path("m4a")
+    ms = int(delay * 1000)
+    await _run("ffmpeg", "-y", "-loglevel", "error", "-i", str(src), "-af",
+               f"aresample=44100,aformat=channel_layouts=stereo,adelay={ms}|{ms},apad=whole_dur={total:.2f},"
+               f"atrim=0:{total:.2f},afade=t=out:st={max(0.0, total - 0.3):.2f}:d=0.3",
+               "-c:a", "aac", "-b:a", "192k", str(dst))
+    return dst
+
+
+async def dims(video: Path) -> tuple[int, int]:
+    """Ширина и высота видео (для Telegram, иначе он может показать ролик растянутым)."""
+    out = await _run("ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
+                     "-of", "csv=p=0", str(video))
+    w, h = (int(x) for x in out.strip().split(",")[:2])
+    return w, h

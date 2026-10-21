@@ -20,7 +20,7 @@ import media
 import prompts
 import voice
 from config import (ADMIN_IDS, BOT_TOKEN, DAILY_LIMIT_USD, DATA_DIR, DURATIONS, IMAGE_PRICE_USD, LANGS,
-                    LIPSYNC_USD_PER_SEC, LOG_DIR, AZURE_VOICES, REFS_CUSTOM_DIR, REFS_DEFAULT_DIR, SCENE_MODEL, SCENE_PLANS,
+                    LIPSYNC_USD_PER_SEC, LOG_DIR, AZURE_VOICES, REFS_CUSTOM_DIR, REFS_DEFAULT_DIR, SCENE_MODEL, SCENE_PLANS, AVATAR_USD_PER_SEC,
                     SCENE_TEMPLATE, TTS_USD_PER_1K, VIDEO_MODELS, VOICE_CHOICES)
 
 # ---------- Лог: в файл (5 МБ × 3) и в консоль ----------
@@ -88,6 +88,19 @@ class AntiDoubleClick(BaseMiddleware):
         self.recent[key] = now
         return await handler(event, data)
 
+
+
+async def send_vid(bot: Bot, chat_id: int, file: FSInputFile, **kw):
+    """Отправка видео с размером и длительностью — иначе Telegram показывает вертикаль растянутой."""
+    path = Path(file.path)
+    try:
+        w, h = await media.dims(path)
+        kw.setdefault("width", w)
+        kw.setdefault("height", h)
+        kw.setdefault("duration", int(round(await media.duration(path))))
+    except Exception:  # noqa: BLE001
+        log.warning("Не удалось узнать размер видео")
+    return await bot.send_video(chat_id, file, **kw)
 
 def kb(*rows: list[tuple[str, str]]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=t, callback_data=d)
@@ -442,7 +455,7 @@ async def run_video(bot: Bot, chat_id: int, user, data: dict, state: FSMContext)
         db.log_gen(user.id, user.full_name, data.get("kind", "product"), m.key, data["sec"], data["price"], "ok")
         await remember(state, user.id, final, data.get("kind", "product"),
                        data["plan"].get("summary_ru", "") + " " + data.get("idea", ""))
-        await bot.send_video(chat_id, FSInputFile(final, filename="laza.mp4"), supports_streaming=True,
+        await send_vid(bot, chat_id, FSInputFile(final, filename="laza.mp4"), supports_streaming=True,
                              caption=f"✅ {m.title}, {data['sec']} с, ≈ {usd(data['price'])}",
                              reply_markup=kb([("🔊 Озвучить", "voice")],
                                              [("🔁 Ещё вариант", "again"), ("✏️ Другая идея", "newidea")]))
@@ -618,7 +631,7 @@ async def run_voice(bot: Bot, chat_id: int, user, data: dict, state: FSMContext)
         temp.append(final)
         await state.update_data(voice_track=str(_keep_track(user.id, track)))
         sec = await media.duration(final)
-        await bot.send_video(chat_id, FSInputFile(final, filename="laza_voice.mp4"), supports_streaming=True,
+        await send_vid(bot, chat_id, FSInputFile(final, filename="laza_voice.mp4"), supports_streaming=True,
                              caption=f"✅ С голосом Лазы ({LANGS[lang]})",
                              reply_markup=after_voice_kb(data.get("last_kind", ""), sec))
         log.info("Озвучка готова %s", user.id)
@@ -678,7 +691,7 @@ async def run_lips(bot: Bot, chat_id: int, user, data: dict, sec: float, price: 
         final = await media.fit_telegram(out)
         temp.append(final)
         db.log_gen(user.id, user.full_name, "lipsync", "sync-lipsync-2", int(sec), price, "ok")
-        await bot.send_video(chat_id, FSInputFile(final, filename="laza_lips.mp4"), supports_streaming=True,
+        await send_vid(bot, chat_id, FSInputFile(final, filename="laza_lips.mp4"), supports_streaming=True,
                              caption=f"✅ Губы синхронизированы, ≈ {usd(price)}. На мультперсонаже результат "
                                      "бывает разным — если хуже, используйте версию без синхронизации.")
     except fal_api.GenError as e:
@@ -697,8 +710,8 @@ def scenes_price(total: int, lang: str | None) -> tuple[float, float, float]:
     """(картинки, видео, голос) в долларах."""
     n, sec = SCENE_PLANS[total]
     m = VIDEO_MODELS[SCENE_MODEL]
-    return (round(IMAGE_PRICE_USD * n, 2), round(m.usd_per_sec * sec * n, 2),
-            0.03 if lang else 0.0)
+    rate = AVATAR_USD_PER_SEC if lang else m.usd_per_sec   # с голосом — говорящие сцены (губы по звуку)
+    return (round(IMAGE_PRICE_USD * n, 2), round(rate * sec * n, 2), 0.03 if lang else 0.0)
 
 
 @router.message(F.text == BTN_SCENES, Allowed())
@@ -729,7 +742,7 @@ async def sc_ask_len(msg: Message, state: FSMContext):
     for total, (n, sec) in SCENE_PLANS.items():
         img, vid, _ = scenes_price(total, "ru")
         rows.append([(f"{total} с · {n} сцены по {sec} с — ≈ {usd(img + vid)}", f"sclen:{total}")])
-    await msg.answer("Длина ролика? (видео — Kling 3.0, цена с картинками)", reply_markup=kb(*rows))
+    await msg.answer("Длина ролика? (сцены с голосом — Kling Avatar, губы точно по звуку; цена с картинками)", reply_markup=kb(*rows))
 
 
 @router.callback_query(F.data.startswith("sclen:"), Allowed())
@@ -886,27 +899,34 @@ async def run_scenes(bot: Bot, chat_id: int, user, data: dict, state: FSMContext
     status = await bot.send_message(chat_id, "⏳ Начинаю…")
     log.info("Сцены старт %s: %s с, язык %s", user.id, total, lang)
     try:
-        clips = []
+        clips, voices = [], []
         for i, (s, img) in enumerate(zip(scenes, imgs), 1):
-            await status.edit_text(f"⏳ Оживляю сцену {i} из {n}… (2–5 минут каждая). Можно пользоваться ботом.")
-            url = await fal_api.video_part(m, await fal_api.upload(Path(img)), s["motion_prompt"], sec)
+            img_url = await fal_api.upload(Path(img))
+            if lang and s.get("voice"):
+                await status.edit_text(f"🗣 Сцена {i} из {n}: голос и губы… (2–5 минут каждая). "
+                                       "Можно пользоваться ботом.")
+                mp3 = await make_voice(s["voice"], lang)
+                temp.append(mp3)
+                db.log_gen(user.id, user.full_name, "voice", "tts", 0, tts_price(s["voice"]), "ok")
+                aud = await media.scene_audio(mp3, 0.2, sec)
+                temp.append(aud)
+                voices.append((aud, (i - 1) * sec, sec))
+                prompt = (s["motion_prompt"] + " The character talks to the camera, lips precisely synced to the "
+                          "speech, lively facial expressions and natural hand gestures. Keep the character design, "
+                          "body proportions and the scene unchanged.")[:2400]
+                url = await fal_api.avatar(img_url, await fal_api.upload(aud), prompt)
+            else:
+                await status.edit_text(f"⏳ Оживляю сцену {i} из {n}… (2–5 минут каждая). Можно пользоваться ботом.")
+                url = await fal_api.video_part(m, img_url, s["motion_prompt"], sec)
             clip = await media.download(url, "mp4")
             clips.append(clip)
             temp.append(clip)
         await status.edit_text("🎞 Монтирую…")
-        joined = await media.concat(clips)
+        joined = await media.concat(clips, keep_audio=False)
         temp.append(joined)
-        db.log_gen(user.id, user.full_name, "scenes", m.key, total, vid_price, "ok")
+        db.log_gen(user.id, user.full_name, "scenes", "avatar" if voices else m.key, total, vid_price, "ok")
         final, track = joined, None
-        if lang and any(s.get("voice") for s in scenes):
-            await status.edit_text("🔊 Озвучиваю…")
-            voices = []
-            for i, s in enumerate(scenes):
-                if s.get("voice"):
-                    mp3 = await make_voice(s["voice"], lang)
-                    temp.append(mp3)
-                    voices.append((mp3, i * sec + 0.2, sec - 0.2))
-                    db.log_gen(user.id, user.full_name, "voice", "eleven-v3", 0, tts_price(s["voice"]), "ok")
+        if voices:
             track = await media.build_track(voices, await media.duration(joined))
             temp.append(track)
             final = await media.mux_voice(joined, track)
@@ -916,7 +936,7 @@ async def run_scenes(bot: Bot, chat_id: int, user, data: dict, state: FSMContext
         temp.append(out)
         sec_total = await media.duration(out)
         markup = after_voice_kb("scenes", sec_total) if track else kb([("🔊 Озвучить", "voice")])
-        await bot.send_video(chat_id, FSInputFile(out, filename="laza_scenes.mp4"), supports_streaming=True,
+        await send_vid(bot, chat_id, FSInputFile(out, filename="laza_scenes.mp4"), supports_streaming=True,
                              caption=f"✅ Ролик с Лазой, {total} с, {n} сцены", reply_markup=markup)
         log.info("Сцены готовы %s", user.id)
     except fal_api.GenError as e:

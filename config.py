@@ -102,6 +102,10 @@ AZURE_DEFAULT = {"ru": "ru-RU-DmitryNeural", "uz": "uz-UZ-SardorNeural"}
 AZURE_PITCH = os.getenv("AZURE_PITCH", "+6%")   # чуть выше — голос моложе, как у мультперсонажа
 AZURE_RATE = os.getenv("AZURE_RATE", "+4%")
 
+# Говорящая сцена: Kling AI Avatar v2 — картинка + голос → видео, губы точно по звуку. $0.0562 за секунду
+AVATAR_MODEL = "fal-ai/kling-video/ai-avatar/v2/standard"
+AVATAR_USD_PER_SEC = 0.0562
+
 # Синхронизация губ: sync.so lipsync-2, $3 за минуту
 LIPSYNC_MODEL = "fal-ai/sync-lipsync/v2"
 LIPSYNC_USD_PER_SEC = 0.05

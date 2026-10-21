@@ -5,7 +5,7 @@ from pathlib import Path
 
 import fal_client
 
-from config import IMAGE_MODEL, LIPSYNC_MODEL, TTS_MODEL, VideoModel
+from config import AVATAR_MODEL, IMAGE_MODEL, LIPSYNC_MODEL, TTS_MODEL, VideoModel
 
 
 class GenError(Exception):
@@ -99,3 +99,12 @@ async def lipsync(video_url: str, audio_url: str) -> str:
         return res["video"]["url"]
     except (KeyError, TypeError) as e:
         raise GenError("Синхронизация губ не удалась. Попробуйте ещё раз.") from e
+
+
+async def avatar(image_url: str, audio_url: str, prompt: str) -> str:
+    """Говорящая сцена: картинка + голос → видео с губами точно по звуку (Kling AI Avatar v2)."""
+    res = await _call(AVATAR_MODEL, {"image_url": image_url, "audio_url": audio_url, "prompt": prompt})
+    try:
+        return res["video"]["url"]
+    except (KeyError, TypeError) as e:
+        raise GenError("Сервис не вернул говорящую сцену. Попробуйте ещё раз.") from e
