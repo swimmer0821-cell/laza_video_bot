@@ -11,10 +11,17 @@ from config import ANTHROPIC_API_KEY, CLAUDE_MODEL
 
 client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
 
-BRAND = """Brand context: LAZA — freeze-dried (sublimated) ice cream made in Uzbekistan. The product is
-airy, crunchy, porous cubes/pieces of ice cream that do not melt; flavors include vanilla/plombir,
-pistachio, chocolate, strawberry, cookies, fruit mix. Packaging: containers and bags with LAZA labels.
-Target: vertical 9:16 videos for Instagram Reels / YouTube Shorts, appetizing premium food commercial."""
+BRAND = """Brand context: LAZA (Instagram @laza.uzbekistan) — premium freeze-dried snacks made in Uzbekistan:
+ice cream cubes you can crunch like a snack. Light, airy, crunchy, dry cubes that keep the ice-cream taste and do not
+melt. Flavors: fruit mix, forest berries, crème brûlée, mix of 4 flavors, pistachio, plombir, chocolate,
+strawberry, banana, chocolate-bar and candy-coated-chocolate flavors (never show other brands' logos).
+Also freeze-dried suluguni cheese and kurut. Packaging: containers and bags with LAZA labels (premium design).
+BRAND CORE (follow strictly): emotions -> pleasure -> virality. Content runs on surprise, delight, reactions,
+humor, crunch sound, unexpected flavors and everyday life moments in Uzbekistan (university, car, trips,
+moms with kids, friends, family table after plov, summer heat). NEVER lecture: no technology or drying
+process explanations, no factory or lab, no vitamins, no health or diet claims, no "healthy food for fitness
+people". A fantasy cartoon "magic" world of Laza is allowed instead of a factory. The product is a new kind of
+treat — ice cream as a crunchy snack. Target: vertical 9:16 Reels / Shorts, native-looking, fun, not a TV ad."""
 
 CHARACTER = """The LAZA mascot: a cute 3D cartoon character whose body is a single hexagonal cube of
 freeze-dried vanilla ice cream (pale cream-beige, porous texture with small holes), big glossy brown eyes,
@@ -113,8 +120,9 @@ async def image_prompt(refs: list[Path], product: Path | None, idea: str) -> dic
     return res
 
 
-VOICE = """Laza's voice and personality: a cheerful, friendly, slightly mischievous young character, proud of
-"real ice cream without middlemen", speaks simply, warmly, with energy. Speaks to the viewer as a friend.
+VOICE = """Laza's voice and personality: a cheerful, cheeky, a bit mischievous young character with self-irony;
+the ice cream that is never afraid of the heat. Loves surprising people, jokes about Tashkent life (heat,
+traffic, family feasts), never boasts with facts. Speaks simply, warmly, with energy, to the viewer as a friend.
 Russian: natural modern spoken Russian, «ты»-форма. Write the name in Cyrillic: «Лаза» (stress on the last
 syllable is added automatically). Uzbek: natural spoken Uzbek in LATIN script
 (o', g', sh, ch), «sen» form, no Russian words except brand names.
@@ -135,14 +143,15 @@ HOW SHORT VIDEOS WIN (follow strictly):
 - The first 1.5 seconds decide everything. The spoken hook must be said within the first 1.5 s (max ~20 characters before the first pause), the on-screen text says the same idea. Scene 1 opens IN the action — no greeting, no "hi, I'm Laza",
   no logo, no slow intro. The hook fires on 3 channels at once: a striking first frame, the first spoken
   words, and a short on-screen text. Most people watch muted, so the on-screen text alone must hook.
-- A hook opens a gap the viewer needs to close (curiosity, surprise, stakes, a specific number, a myth,
-  identity "if you love ice cream…", a challenge). It must be TRUE — the video must pay it off.
-  Allowed facts only: real ice cream from natural cream, freeze-dried, does not melt, crunchy, light,
-  made in Uzbekistan by the producer (no middlemen). Never invent numbers, awards, prices or claims.
+- A hook opens a gap the viewer needs to close: curiosity, surprise, humor, a relatable situation
+  ("when it's +42 and…"), a challenge, a flavor guess, a reaction. Emotion, NOT facts or technology.
+  It must be TRUE — the video must pay it off. Never invent numbers, awards, prices, reviews or health claims.
 - One idea per video. Every scene changes the picture (new action or angle) — no static talking.
-- Open a loop early, pay it off at the end. The last scene ends on a soft CTA and, if possible, a beat
-  that makes the viewer want to rewatch or send it to a friend ("send this to someone who…").
+- Open a loop early, pay it off at the end. End on a funny or satisfying beat (punchline, reveal, crunch) and a
+  very soft brand mention ("Laza"), not a sales pitch. Do NOT ask viewers to send/tag/share — Instagram demotes
+  engagement bait; the reason to send must be inside the video (relatable, funny, surprising).
 - Think: who would DM this video to whom, and why? Build that reason in.
+- If a product photo is given, the real LAZA package appears in the frames as is (label unchanged).
 Make a storyboard of N scenes. For EACH scene write:
 - "title_ru": 2-5 words in Russian.
 - "image_prompt": English prompt (60-110 words) for an image editing model that receives mascot reference
@@ -166,7 +175,8 @@ Also write:
     "voice_ru": "its Russian translation"}}. hooks[0] must equal scene 1 voice.
 - "caption": Instagram caption in the voice language (Russian if no voice): first sentence ≤ 120 chars with
   the main keyword (e.g. сублимированное мороженое / sublimatsiya qilingan muzqaymoq) and a reason to watch,
-  then 1-2 short lines, a soft CTA to order. No fake claims.
+  then 1-2 short lines in Laza's voice, end with where to find it: «Laza — ссылка в профиле» / «Laza — profilda».
+  No fake claims, no health claims.
 - "hashtags": 3-5 relevant hashtags (strings with #).
 - "sends_ru": one short sentence in Russian — who would send this to whom and why.
 "summary_ru": 1-2 sentences in Russian about the whole video.
@@ -187,12 +197,14 @@ async def voice_line(context: str, seconds: float, lang: str, image: Path | None
     return res
 
 
-async def storyboard(refs: list[Path], idea: str, n: int, sec: int, lang: str | None) -> dict:
+async def storyboard(refs: list[Path], idea: str, n: int, sec: int, lang: str | None,
+                     product: Path | None = None) -> dict:
     """Раскадровка ролика из n сцен по sec секунд."""
     target = {"ru": "Russian", "uz": "Uzbek (Latin script)"}.get(lang or "", "NO VOICE — leave voice fields empty")
-    text = (f"Images are mascot references. Scenes: exactly {n}, each {sec} seconds. "
+    text = (f"Images are mascot references" + (" and the LAST image is the real LAZA product package that must "
+            "appear in the scenes" if product else "") + f". Scenes: exactly {n}, each {sec} seconds. "
             f"Voice language: {target}.\nUser idea (Russian): «{idea}».")
-    res = await _ask(SCENES_SYS, refs[:2], text)
+    res = await _ask(SCENES_SYS, refs[:2] + ([product] if product else []), text)
     scenes = res.get("scenes") or []
     if len(scenes) != n or not all(s.get("image_prompt") and s.get("motion_prompt") for s in scenes):
         raise ValueError("Claude вернул неполную раскадровку")

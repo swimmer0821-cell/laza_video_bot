@@ -22,7 +22,7 @@ import prompts
 import voice
 from config import (ADMIN_IDS, BOT_TOKEN, DAILY_LIMIT_USD, DATA_DIR, DURATIONS, IMAGE_PRICE_USD, LANGS,
                     LIPSYNC_USD_PER_SEC, LOG_DIR, AZURE_VOICES, REFS_CUSTOM_DIR, REFS_DEFAULT_DIR, SCENE_MODEL, SCENE_PLANS, AVATAR_USD_PER_SEC,
-                    SCENE_TEMPLATE, SCENE_TEMPLATES, TTS_USD_PER_1K, VIDEO_MODELS, VOICE_CHOICES)
+                    SCENE_TEMPLATE, SCENE_TEMPLATES, SOUND_TEMPLATES, TTS_USD_PER_1K, VIDEO_MODELS, VOICE_CHOICES)
 
 # ---------- Лог: в файл (5 МБ × 3) и в консоль ----------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
@@ -724,27 +724,38 @@ async def run_lips(bot: Bot, chat_id: int, user, data: dict, sec: float, price: 
 
 
 # ---------- 🎞 Ролик с Лазой из нескольких сцен ----------
-def scenes_price(total: int, lang: str | None) -> tuple[float, float, float]:
-    """(картинки, видео, голос) в долларах."""
+def scenes_price(total: int, lang: str | None, sound: bool = False) -> tuple[float, float, float]:
+    """(картинки, видео, голос) в долларах. sound — сцены без голоса со звуком (Seedance, дороже)."""
     n, sec = SCENE_PLANS[total]
     m = VIDEO_MODELS[SCENE_MODEL]
     rate = AVATAR_USD_PER_SEC if lang else m.usd_per_sec   # с голосом — говорящие сцены (губы по звуку)
+    if sound:
+        rate = max(rate, VIDEO_MODELS["seed"].usd_per_sec)
     return (round(IMAGE_PRICE_USD * n, 2), round(rate * sec * n, 2), 0.03 if lang else 0.0)
 
 
 @router.message(F.text == BTN_SCENES, Allowed())
 async def sc_start(msg: Message, state: FSMContext):
     await state.set_state(Flow.sc_idea)
-    await msg.answer("О чём ролик? Опишите сцены по-русски через стрелки, например:\n"
-                     "«Лаза здоровается → показывает фисташковое мороженое → зовёт на дегустацию»\n\n"
+    await state.update_data(sc_product="", sc_tpl="")
+    await msg.answer("О чём ролик? Опишите идею по-русски, например:\n"
+                     "«Лаза в пробке на Амира Темура, все злые, а он угощает соседей кубиками»\n\n"
+                     "📦 Можно сначала прислать фото пачки Laza — она появится в сценах.\n\n"
                      "Или возьмите готовый сюжет:",
                      reply_markup=kb(*[[(t, f"sctpl:{k}") for k, (t, _) in list(SCENE_TEMPLATES.items())[i:i + 2]]
                                        for i in range(0, len(SCENE_TEMPLATES), 2)]))
 
 
+@router.message(Flow.sc_idea, F.photo, Allowed())
+async def sc_product(msg: Message, state: FSMContext, bot: Bot):
+    path = await save_photo(bot, msg)
+    await state.update_data(sc_product=str(path))
+    await msg.answer("📦 Фото продукта принято — пачка будет в сценах. Теперь напишите идею или выберите сюжет выше.")
+
+
 @router.message(Flow.sc_idea, F.text, NOT_MENU, Allowed())
 async def sc_idea(msg: Message, state: FSMContext):
-    await state.update_data(sc_idea=msg.text.strip())
+    await state.update_data(sc_idea=msg.text.strip(), sc_tpl="")
     await sc_ask_len(msg, state)
 
 
@@ -753,7 +764,7 @@ async def sc_tpl(cb: CallbackQuery, state: FSMContext):
     key = cb.data.split(":")[1] if cb.data.startswith("sctpl:") else "intro"
     title, plot = SCENE_TEMPLATES.get(key, SCENE_TEMPLATES["intro"])
     await cb.message.edit_text(f"Сюжет: {title}\n{plot}")
-    await state.update_data(sc_idea=plot)
+    await state.update_data(sc_idea=plot, sc_tpl=key)
     await sc_ask_len(cb.message, state)
     await cb.answer()
 
@@ -792,7 +803,8 @@ async def sc_plan(msg: Message, state: FSMContext):
     n, sec = SCENE_PLANS[total]
     await msg.edit_text("✍️ Claude пишет сценарий и реплики…")
     try:
-        sb = await prompts.storyboard(refs(), data["sc_idea"], n, sec, lang)
+        prod = Path(data["sc_product"]) if data.get("sc_product") and Path(data["sc_product"]).exists() else None
+        sb = await prompts.storyboard(refs(), data["sc_idea"], n, sec, lang, prod)
     except Exception:
         log.exception("Ошибка раскадровки")
         await msg.edit_text("⚠️ Не получилось написать сценарий.", reply_markup=kb([("🔁 Ещё раз", "scplan")]))
@@ -802,9 +814,9 @@ async def sc_plan(msg: Message, state: FSMContext):
     await show_plan(msg, state)
 
 
-def plan_text(sb: dict, total: int, lang: str | None) -> str:
+def plan_text(sb: dict, total: int, lang: str | None, sound: bool = False) -> str:
     n, sec = SCENE_PLANS[total]
-    img, vid, vo = scenes_price(total, lang)
+    img, vid, vo = scenes_price(total, lang, sound)
     hooks, hi = sb.get("hooks") or [], sb.get("hook_i", 0)
     lines = [f"🎞 {sb.get('summary_ru', '')}", ""]
     if hooks and hooks[hi].get("overlay"):
@@ -832,14 +844,14 @@ def plan_text(sb: dict, total: int, lang: str | None) -> str:
 async def show_plan(msg: Message, state: FSMContext):
     data = await state.get_data()
     sb, total, lang = data["sc_board"], data["sc_total"], data.get("sc_lang") or None
-    img, _, _ = scenes_price(total, lang)
+    img, _, _ = scenes_price(total, lang, data.get("sc_tpl") in SOUND_TEMPLATES)
     hooks, hi = sb.get("hooks") or [], sb.get("hook_i", 0)
     hook_row = [(f"🎣 Хук {j + 1}", f"schook:{j}") for j in range(len(hooks)) if j != hi and hooks[j].get("overlay")]
     rows = [[(f"🎨 Нарисовать сцены — ≈ {usd(img)}", "scdraw")]]
     if hook_row:
         rows.append(hook_row)
     rows.append([("🔁 Другой сценарий", "scplan"), ("❌ Отмена", "cancel")])
-    await msg.edit_text(plan_text(sb, total, lang), reply_markup=kb(*rows))
+    await msg.edit_text(plan_text(sb, total, lang, data.get("sc_tpl") in SOUND_TEMPLATES), reply_markup=kb(*rows))
 
 
 @router.callback_query(F.data.startswith("schook:"), Allowed())
@@ -893,6 +905,8 @@ async def draw_scenes(bot: Bot, chat_id: int, user, state: FSMContext, which: li
     status = await bot.send_message(chat_id, f"🎨 Рисую сцены: {len(which)} шт. (до минуты на каждую)…")
     try:
         ref_urls = [await fal_api.upload(p) for p in refs()]
+        if data.get("sc_product") and Path(data["sc_product"]).exists():   # пачка Laza — последней картинкой
+            ref_urls.append(await fal_api.upload(Path(data["sc_product"])))
         for i in which:
             url = await fal_api.character_image(ref_urls, scenes[i]["image_prompt"])
             img = await media.download(url, "jpg")
@@ -903,7 +917,7 @@ async def draw_scenes(bot: Bot, chat_id: int, user, state: FSMContext, which: li
             await bot.send_photo(chat_id, FSInputFile(img), caption=f"Сцена {i + 1}: {scenes[i].get('title_ru', '')}")
         await state.update_data(sc_imgs=imgs)
         total, lang = data["sc_total"], data.get("sc_lang") or None
-        _, vid, vo = scenes_price(total, lang)
+        _, vid, vo = scenes_price(total, lang, data.get("sc_tpl") in SOUND_TEMPLATES)
         await bot.send_message(chat_id, "Всё нравится? Тогда оживляем и монтируем. "
                                         "Не нравится сцена — перерисуйте её (≈ 0,15 $).",
                                reply_markup=kb([(f"🎬 Оживить и смонтировать — ≈ {usd(vid + vo)}", "scgo")],
@@ -942,7 +956,7 @@ async def sc_go(cb: CallbackQuery, state: FSMContext, bot: Bot):
     if not imgs or not all(p and Path(p).exists() for p in imgs):
         await cb.answer("Картинки устарели — начните заново", show_alert=True)
         return
-    _, vid, vo = scenes_price(data["sc_total"], data.get("sc_lang") or None)
+    _, vid, vo = scenes_price(data["sc_total"], data.get("sc_lang") or None, data.get("sc_tpl") in SOUND_TEMPLATES)
     if db.spent_today() + vid + vo > DAILY_LIMIT_USD:
         await cb.answer(f"Дневной лимит {usd(DAILY_LIMIT_USD)} будет превышен", show_alert=True)
         return
@@ -967,6 +981,8 @@ async def run_scenes(bot: Bot, chat_id: int, user, data: dict, state: FSMContext
     log.info("Сцены старт %s: %s с, язык %s", user.id, total, lang)
     try:
         voices: list = []
+        sound = data.get("sc_tpl") in SOUND_TEMPLATES
+        quiet_m = VIDEO_MODELS["seed"] if sound else m   # без голоса: со звуком (хруст) или Kling без звука
         await status.edit_text(f"🎬 Оживляю {n} сцен сразу (обычно 3–8 минут). Можно пользоваться ботом.")
 
         async def one(i: int, s: dict, img: str) -> Path:
@@ -983,7 +999,7 @@ async def run_scenes(bot: Bot, chat_id: int, user, data: dict, state: FSMContext
                           "body proportions and the scene unchanged.")[:2400]
                 url = await fal_api.avatar(img_url, await fal_api.upload(aud), prompt)
             else:
-                url = await fal_api.video_part(m, img_url, s["motion_prompt"], sec)
+                url = await fal_api.video_part(quiet_m, img_url, s["motion_prompt"], sec)
             clip = await media.download(url, "mp4")
             temp.append(clip)
             return clip
@@ -991,10 +1007,12 @@ async def run_scenes(bot: Bot, chat_id: int, user, data: dict, state: FSMContext
         clips = list(await asyncio.gather(*(one(i, s, img) for i, (s, img) in enumerate(zip(scenes, imgs)))))
         voices.sort(key=lambda v: v[1])
         await status.edit_text("🎞 Монтирую…")
-        joined = await media.concat(clips, keep_audio=False)
+        joined = await media.concat(clips, keep_audio=sound)
         temp.append(joined)
-        db.log_gen(user.id, user.full_name, "scenes", "avatar" if voices else m.key, total, vid_price, "ok")
+        db.log_gen(user.id, user.full_name, "scenes", "avatar" if voices else quiet_m.key, total, vid_price, "ok")
         final, track = joined, None
+        if sound and await media.has_audio(joined):
+            voices = []   # звук уже в сценах: голос (в говорящих) и хруст (в остальных)
         if voices:
             track = await media.build_track(voices, await media.duration(joined))
             temp.append(track)
