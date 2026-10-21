@@ -42,6 +42,8 @@ MENU = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=BTN_VIDEO), KeyboardBu
 NOT_MENU = ~F.text.in_({BTN_VIDEO, BTN_CHAR, BTN_SCENES, BTN_SPENT, BTN_HELP})   # кнопки меню работают всегда
 LAST_DIR = DATA_DIR / "last"          # последний ролик каждого человека (для озвучки и синхронизации губ)
 LAST_DIR.mkdir(parents=True, exist_ok=True)
+SENT_DIR = DATA_DIR / "sent"          # копии последних отправленных роликов (смотрит Claude через сервер LAZA)
+SENT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class Flow(StatesGroup):
@@ -100,7 +102,22 @@ async def send_vid(bot: Bot, chat_id: int, file: FSInputFile, **kw):
         kw.setdefault("duration", int(round(await media.duration(path))))
     except Exception:  # noqa: BLE001
         log.warning("Не удалось узнать размер видео")
-    return await bot.send_video(chat_id, file, **kw)
+    res = await bot.send_video(chat_id, file, **kw)
+    _keep_sent(path, file.filename or path.name, kw)
+    return res
+
+
+def _keep_sent(path: Path, name: str, kw: dict) -> None:
+    """Копия отправленного ролика в data/sent (последние 6) — чтобы Claude мог посмотреть результат."""
+    try:
+        for old in sorted(SENT_DIR.glob("*.mp4"))[:-5]:
+            old.unlink(missing_ok=True)
+        dst = SENT_DIR / f"{time.strftime('%Y%m%d_%H%M%S')}_{name}"
+        shutil.copy(path, dst)
+        log.info("SENT %s %sx%s %s с | %s", dst.name, kw.get("width"), kw.get("height"), kw.get("duration"),
+                 (kw.get("caption") or "").replace("\n", " ")[:200])
+    except Exception:  # noqa: BLE001
+        log.warning("Не сохранил копию ролика")
 
 def kb(*rows: list[tuple[str, str]]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=t, callback_data=d)
