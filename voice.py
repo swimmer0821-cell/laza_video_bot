@@ -6,6 +6,7 @@ import re
 from html import escape
 from pathlib import Path
 
+import asyncio
 import base64
 import wave
 
@@ -158,7 +159,15 @@ _STYLE = {
 }
 
 
+_GEMINI_LOCK = asyncio.Semaphore(1)   # бесплатный лимит Google: по одному запросу, с паузой при 429
+
+
 async def _gemini(text: str, lang: str, voice_name: str | None = None, way: str | None = None) -> Path:
+    async with _GEMINI_LOCK:
+        return await _gemini_call(text, lang, voice_name, way)
+
+
+async def _gemini_call(text: str, lang: str, voice_name: str | None = None, way: str | None = None) -> Path:
     """Естественный голос Google Gemini TTS → mp3. Ошибка — исключение (дальше запасной движок)."""
     voice_name = voice_name if voice_name in GEMINI_VOICES else gemini_voice(lang)
     body_text = _mark_name(strip_tags(text), lang, "loza" if lang == "ru" else (way or "plain"), False)
@@ -169,7 +178,11 @@ async def _gemini(text: str, lang: str, voice_name: str | None = None, way: str 
     async with httpx.AsyncClient(timeout=120) as c:
         for model in GEMINI_TTS_MODELS:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-            r = await c.post(url, json=payload, headers={"x-goog-api-key": GEMINI_API_KEY})
+            for attempt in range(4):   # 429 — лимит в минуту: ждём и повторяем
+                r = await c.post(url, json=payload, headers={"x-goog-api-key": GEMINI_API_KEY})
+                if r.status_code != 429:
+                    break
+                await asyncio.sleep(8 * (attempt + 1))
             if r.status_code != 200:
                 last = f"{model}: HTTP {r.status_code} {r.text[:200]}"
                 logging.warning("Gemini TTS %s", last)
