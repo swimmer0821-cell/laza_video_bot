@@ -45,6 +45,9 @@ LAST_DIR = DATA_DIR / "last"          # последний ролик каждо
 LAST_DIR.mkdir(parents=True, exist_ok=True)
 SENT_DIR = DATA_DIR / "sent"          # копии последних отправленных роликов (смотрит Claude через сервер LAZA)
 SENT_DIR.mkdir(parents=True, exist_ok=True)
+SCN_DIR = DATA_DIR / "scenes"         # картинки и клипы сцен последнего ролика (для второй языковой версии)
+SCN_DIR.mkdir(parents=True, exist_ok=True)
+OTHER = {"ru": "uz", "uz": "ru"}
 
 
 class Flow(StatesGroup):
@@ -985,7 +988,12 @@ async def run_scenes(bot: Bot, chat_id: int, user, data: dict, state: FSMContext
         quiet_m = VIDEO_MODELS["seed"] if sound else m   # без голоса: со звуком (хруст) или Kling без звука
         await status.edit_text(f"🎬 Оживляю {n} сцен сразу (обычно 3–8 минут). Можно пользоваться ботом.")
 
+        reuse = data.get("sc_reuse") or {}
+
         async def one(i: int, s: dict, img: str) -> Path:
+            old = reuse.get(str(i))
+            if old and Path(old).exists() and not (lang and s.get("voice")):
+                return Path(old)   # сцена без голоса — берём готовый клип, без новой генерации
             img_url = await fal_api.upload(Path(img))
             if lang and s.get("voice"):
                 mp3 = await make_voice(s["voice"], lang)
@@ -1006,6 +1014,7 @@ async def run_scenes(bot: Bot, chat_id: int, user, data: dict, state: FSMContext
 
         clips = list(await asyncio.gather(*(one(i, s, img) for i, (s, img) in enumerate(zip(scenes, imgs)))))
         voices.sort(key=lambda v: v[1])
+        kept = _keep_scenes(user.id, imgs, clips, scenes, lang)
         await status.edit_text("🎞 Монтирую…")
         joined = await media.concat(clips, keep_audio=sound)
         temp.append(joined)
@@ -1029,6 +1038,14 @@ async def run_scenes(bot: Bot, chat_id: int, user, data: dict, state: FSMContext
         temp.append(out)
         sec_total = await media.duration(out)
         markup = after_voice_kb("scenes", sec_total) if track else kb([("🔊 Озвучить", "voice")])
+        if lang and track and kept:
+            other = OTHER[lang]
+            nv = sum(1 for s in scenes if s.get("voice"))
+            price = AVATAR_USD_PER_SEC * sec * nv + 0.01 * nv
+            await state.update_data(sc_kept=kept)
+            markup.inline_keyboard.append([InlineKeyboardButton(
+                text=f"{LANGS[other][:2]} {'Узбекская' if other == 'uz' else 'Русская'} версия — ≈ {usd(price)}",
+                callback_data=f"sclang2:{other}")])
         await send_vid(bot, chat_id, FSInputFile(out, filename="laza_scenes.mp4"), supports_streaming=True,
                              caption=f"✅ Ролик с Лазой, {total} с, {n} сцен", reply_markup=markup)
         if sb.get("caption"):
@@ -1050,6 +1067,73 @@ async def run_scenes(bot: Bot, chat_id: int, user, data: dict, state: FSMContext
             pass
         media.cleanup(*temp)
 
+
+
+def _keep_scenes(uid: int, imgs: list, clips: list, scenes: list, lang: str | None) -> dict:
+    """Сохраняет картинки и клипы сцен без голоса — для второй языковой версии без повторной оплаты."""
+    try:
+        keep = {Path(c) for c in clips} | {Path(p) for p in imgs}
+        for old in SCN_DIR.glob(f"{uid}_*"):
+            if old not in keep:
+                old.unlink(missing_ok=True)
+        kept = {"imgs": [], "clips": {}}
+        for i, (img, clip, s) in enumerate(zip(imgs, clips, scenes)):
+            dst_img = SCN_DIR / f"{uid}_img{i}.jpg"
+            if Path(img) != dst_img:
+                shutil.copy(img, dst_img)
+            kept["imgs"].append(str(dst_img))
+            if not (lang and s.get("voice")):
+                dst = SCN_DIR / f"{uid}_clip{i}.mp4"
+                if Path(clip) != dst:
+                    shutil.copy(clip, dst)
+                kept["clips"][str(i)] = str(dst)
+        return kept
+    except Exception:  # noqa: BLE001
+        log.warning("Не сохранил сцены для второй версии")
+        return {}
+
+
+@router.callback_query(F.data.startswith("sclang2:"), Allowed())
+async def sc_second_lang(cb: CallbackQuery, state: FSMContext, bot: Bot):
+    """Вторая языковая версия: те же картинки, клипы без голоса — повторно; говорящие сцены — заново."""
+    lang = cb.data.split(":")[1]
+    data = await state.get_data()
+    kept, sb = data.get("sc_kept") or {}, data.get("sc_board")
+    if not sb or not kept or not all(Path(p).exists() for p in kept.get("imgs", [])):
+        await cb.answer("Сцены устарели — сделайте ролик заново", show_alert=True)
+        return
+    if cb.from_user.id in BUSY:
+        await cb.answer("Предыдущая генерация ещё идёт", show_alert=True)
+        return
+    n, sec = SCENE_PLANS[data["sc_total"]]
+    nv = sum(1 for s in sb["scenes"] if s.get("voice"))
+    price = AVATAR_USD_PER_SEC * sec * nv
+    if db.spent_today() + price > DAILY_LIMIT_USD:
+        await cb.answer(f"Дневной лимит {usd(DAILY_LIMIT_USD)} будет превышен", show_alert=True)
+        return
+    await cb.answer("Перевожу и запускаю")
+    BUSY.add(cb.from_user.id)
+    msg = await cb.message.answer(f"✍️ Перевожу реплики на {LANGS[lang]}…")
+    try:
+        tr = await prompts.translate_board(sb, lang, sec)
+    except Exception:
+        log.exception("Ошибка перевода")
+        BUSY.discard(cb.from_user.id)
+        await msg.edit_text("⚠️ Не получилось перевести. Попробуйте ещё раз.")
+        return
+    import copy
+    sb2 = copy.deepcopy(sb)
+    for s, v, vr in zip(sb2["scenes"], tr["voices"], tr.get("voices_ru") or tr["voices"]):
+        if s.get("voice"):
+            s["voice"], s["voice_ru"] = v, vr
+    sb2["hooks"] = [{"mechanism_ru": "", "overlay": tr.get("overlay", ""), "voice": "", "voice_ru": ""}]
+    sb2["hook_i"] = 0
+    sb2["caption"], sb2["hashtags"] = tr.get("caption", ""), tr.get("hashtags", [])
+    lines = [f"{i + 1}. «{shown(s['voice'])}»" for i, s in enumerate(sb2["scenes"]) if s.get("voice")]
+    await msg.edit_text(f"{LANGS[lang]} — реплики:\n" + "\n".join(lines) + "\n\n🎬 Делаю говорящие сцены…")
+    data2 = dict(data, sc_board=sb2, sc_lang=lang, sc_imgs=kept["imgs"], sc_reuse=kept.get("clips", {}))
+    await state.update_data(sc_board=sb2, sc_lang=lang)
+    asyncio.create_task(run_scenes(bot, cb.message.chat.id, cb.from_user, data2, state, price))
 
 # ---------- Руководитель: голос Лазы ----------
 SAMPLES = {"ru": "Привет! Я Лаза — настоящее сублимированное мороженое без посредников. Попробуй Лазу!",

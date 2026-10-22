@@ -220,3 +220,27 @@ async def storyboard(refs: list[Path], idea: str, n: int, sec: int, lang: str | 
                   "voice_ru": scenes[0].get("voice_ru", "")}]
     res["hooks"] = hooks
     return res
+
+
+TRANSLATE_SYS = f"""You adapt a short LAZA video script into another language for the same video.
+{VOICE}
+Rules: keep the meaning, humor and timing; each line must fit the SAME seconds as the original
+(~13 characters per second, leave 0.5 s spare) — shorten if needed. Natural spoken language, not literal.
+Uzbek in LATIN script. Keep "Laza"/«Лаза» as the name. On-screen hook text: max 6 words.
+Return ONLY JSON: {{"voices": ["line for scene 1", ...], "voices_ru": ["Russian meaning of each line", ...],
+"overlay": "on-screen hook text", "caption": "Instagram caption in the target language", "hashtags": ["#...", ...]}}"""
+
+
+async def translate_board(board: dict, lang: str, sec: int) -> dict:
+    """Перевод реплик, текста-хука и подписи ролика на другой язык (для второй языковой версии)."""
+    hooks = board.get("hooks") or [{}]
+    src = {"scene_seconds": sec,
+           "voices": [s.get("voice", "") for s in board["scenes"]],
+           "overlay": hooks[board.get("hook_i", 0)].get("overlay", ""),
+           "caption": board.get("caption", ""), "hashtags": board.get("hashtags", [])}
+    target = "Uzbek (Latin script)" if lang == "uz" else "Russian"
+    res = await _ask(TRANSLATE_SYS, [], f"Target language: {target}.\nScript JSON:\n{json.dumps(src, ensure_ascii=False)}")
+    voices = res.get("voices") or []
+    if len(voices) != len(board["scenes"]):
+        raise ValueError("Перевод вернул не то число реплик")
+    return res
