@@ -6,12 +6,15 @@ import re
 from html import escape
 from pathlib import Path
 
+import base64
+import wave
+
 import httpx
 
 import db
 import fal_api
 import media
-from config import AZURE_DEFAULT, AZURE_PITCH, AZURE_RATE, AZURE_SPEECH_KEY, AZURE_SPEECH_REGION, AZURE_VOICES
+from config import GEMINI_API_KEY, GEMINI_DEFAULT, GEMINI_TTS_MODELS, GEMINI_VOICES, AZURE_DEFAULT, AZURE_PITCH, AZURE_RATE, AZURE_SPEECH_KEY, AZURE_SPEECH_REGION, AZURE_VOICES
 
 # Ударение в имени на последнюю гласную: Лаза́, Лазу́, Лазы́, Лазе́, Лазо́й.
 # Как именно «подсказать» ударение движку — выбирается на слух командой /stress (разные способы).
@@ -96,7 +99,19 @@ def azure_title(lang: str) -> str:
     return next((t for t, n in AZURE_VOICES[lang].items() if n == v), v)
 
 
+def use_gemini(lang: str) -> bool:
+    default = "azure" if (lang == "uz" and use_azure()) else "gemini"   # узбекский по умолчанию — Azure Sardor
+    return bool(GEMINI_API_KEY) and db.get_setting(f"engine_{lang}", default) == "gemini"
+
+
+def gemini_voice(lang: str) -> str:
+    return db.get_setting(f"gemini_{lang}", GEMINI_DEFAULT)
+
+
 def engine(lang: str) -> str:
+    if use_gemini(lang):
+        v = gemini_voice(lang)
+        return f"Google · {v} ({GEMINI_VOICES.get(v, '')})"
     if use_azure():
         return f"Azure · {azure_title(lang)}"
     return f"ElevenLabs · {db.get_voice()}" + (" (с акцентом)" if lang == "uz" else "")
@@ -133,10 +148,70 @@ async def _azure(text: str, lang: str, voice_name: str | None = None, way: str |
     return dst
 
 
-async def speak(text: str, lang: str, voice_name: str | None = None, way: str | None = None) -> Path:
-    """Готовый mp3 с репликой Лазы."""
+_STYLE = {
+    "ru": "Read aloud in Russian in a warm, playful, natural conversational tone, like a cheerful young guy "
+          "talking to a friend in a short Instagram video. Brisk pace, natural pauses, real emotion, "
+          "NOT an announcer or advertisement voice. Text:",
+    "uz": "Read aloud in Uzbek (Tashkent pronunciation) in a warm, playful, natural conversational tone, like a "
+          "cheerful young guy talking to a friend in a short Instagram video. Brisk pace, natural pauses, real "
+          "emotion, NOT an announcer or advertisement voice. Text:",
+}
+
+
+async def _gemini(text: str, lang: str, voice_name: str | None = None, way: str | None = None) -> Path:
+    """Естественный голос Google Gemini TTS → mp3. Ошибка — исключение (дальше запасной движок)."""
+    voice_name = voice_name if voice_name in GEMINI_VOICES else gemini_voice(lang)
+    body_text = _mark_name(strip_tags(text), lang, "loza" if lang == "ru" else (way or "plain"), False)
+    payload = {"contents": [{"parts": [{"text": f"{_STYLE[lang]} {body_text}"}]}],
+               "generationConfig": {"responseModalities": ["AUDIO"],
+                                    "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice_name}}}}}
+    last = None
+    async with httpx.AsyncClient(timeout=120) as c:
+        for model in GEMINI_TTS_MODELS:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+            r = await c.post(url, json=payload, headers={"x-goog-api-key": GEMINI_API_KEY})
+            if r.status_code != 200:
+                last = f"{model}: HTTP {r.status_code} {r.text[:200]}"
+                logging.warning("Gemini TTS %s", last)
+                continue
+            try:
+                part = r.json()["candidates"][0]["content"]["parts"][0]["inlineData"]
+            except (KeyError, IndexError, ValueError):
+                last = f"{model}: нет аудио в ответе"
+                logging.warning("Gemini TTS %s: %s", last, r.text[:300])
+                continue
+            raw, mime = base64.b64decode(part["data"]), part.get("mimeType", "")
+            wav = media.new_path("wav")
+            if "wav" in mime:
+                wav.write_bytes(raw)
+            else:   # сырой PCM 16 бит, моно; частота — из mimeType (обычно 24000)
+                rate = int(re.search(r"rate=(\d+)", mime).group(1)) if "rate=" in mime else 24000
+                with wave.open(str(wav), "wb") as w:
+                    w.setnchannels(1)
+                    w.setsampwidth(2)
+                    w.setframerate(rate)
+                    w.writeframes(raw)
+            mp3 = media.new_path("mp3")
+            await media._run("ffmpeg", "-y", "-loglevel", "error", "-i", str(wav), "-c:a", "libmp3lame",
+                             "-b:a", "128k", str(mp3))
+            media.cleanup(wav)
+            return mp3
+    raise RuntimeError(f"Gemini TTS не сработал: {last}")
+
+
+async def speak(text: str, lang: str, voice_name: str | None = None, way: str | None = None,
+                force: str | None = None) -> Path:
+    """Готовый mp3 с репликой Лазы. force: 'gemini' / 'azure' — для образцов в /voice."""
+    if force == "gemini" or (force is None and use_gemini(lang)):
+        try:
+            return await _gemini(text, lang, voice_name if force == "gemini" else None, way)
+        except Exception as e:  # noqa: BLE001
+            logging.warning("Gemini TTS не сработал, запасной движок: %s", e)
+            if force == "gemini":
+                raise fal_api.GenError("Голос Google не ответил. Проверьте GEMINI_API_KEY.") from e
+            voice_name = None
     if use_azure():
-        return await _azure(text, lang, voice_name, way)
+        return await _azure(text, lang, voice_name if force == "azure" else None, way)
     text = _mark_name(text, lang, way or stress_way(lang), False)
     url = await fal_api.tts(text, lang, voice_name or db.get_voice())
     return await media.download(url, "mp3")

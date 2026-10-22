@@ -22,7 +22,7 @@ import prompts
 import voice
 from config import (ADMIN_IDS, BOT_TOKEN, DAILY_LIMIT_USD, DATA_DIR, DURATIONS, IMAGE_PRICE_USD, LANGS,
                     LIPSYNC_USD_PER_SEC, LOG_DIR, AZURE_VOICES, REFS_CUSTOM_DIR, REFS_DEFAULT_DIR, SCENE_MODEL, SCENE_PLANS, AVATAR_USD_PER_SEC,
-                    SCENE_TEMPLATE, SCENE_TEMPLATES, SOUND_TEMPLATES, TTS_USD_PER_1K, VIDEO_MODELS, VOICE_CHOICES)
+                    SCENE_TEMPLATE, SCENE_TEMPLATES, GEMINI_API_KEY, GEMINI_VOICES, SOUND_TEMPLATES, TTS_USD_PER_1K, VIDEO_MODELS, VOICE_CHOICES)
 
 # ---------- Лог: в файл (5 МБ × 3) и в консоль ----------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
@@ -1136,12 +1136,28 @@ async def sc_second_lang(cb: CallbackQuery, state: FSMContext, bot: Bot):
     asyncio.create_task(run_scenes(bot, cb.message.chat.id, cb.from_user, data2, state, price))
 
 # ---------- Руководитель: голос Лазы ----------
-SAMPLES = {"ru": "Привет! Я Лаза — настоящее сублимированное мороженое без посредников. Попробуй Лазу!",
-           "uz": "Salom! Men Laza — vositachilarsiz haqiqiy sublimatsiya qilingan muzqaymoq. Laza'ni tatib ko'r!"}
+SAMPLES = {"ru": "Слушай, я сам не поверил... Хрустит! Как чипсы, только сладкое. Попробуй — и поймёшь, о чём я.",
+           "uz": "Eshit, o'zim ham ishonmadim... Qarsillaydi! Chipsdek, faqat shirin. Tatib ko'r — tushunasan."}
 
 
 @router.message(Command("voice"), Admin())
 async def voice_choose(msg: Message):
+    if GEMINI_API_KEY:
+        rows = []
+        for lang in ("ru", "uz"):
+            cur = voice.gemini_voice(lang) if voice.use_gemini(lang) else ""
+            names = list(GEMINI_VOICES)
+            for i in range(0, len(names), 3):
+                rows.append([(("✅ " if v == cur else "") + f"{LANGS[lang][:2]} {v}", f"vsample:gm:{lang}:{v}")
+                             for v in names[i:i + 3]])
+        if voice.use_azure():
+            rows.append([(f"{LANGS[l][:2]} Azure {voice.azure_title(l)}", f"vsample:az:{l}:{voice.azure_voice(l)}")
+                         for l in ("ru", "uz")])
+        await msg.answer("Голос Лазы. Google — живые голоса, Azure — дикторские.\n"
+                         f"Сейчас: русский — {voice.engine('ru')}, узбекский — {voice.engine('uz')}.\n\n"
+                         "Нажмите на голос — пришлю пример, затем кнопкой выберите его.\n"
+                         + "\n".join(f"{v} — {d}" for v, d in GEMINI_VOICES.items()), reply_markup=kb(*rows))
+        return
     if voice.use_azure():
         rows = []
         for lang in ("ru", "uz"):
@@ -1166,7 +1182,8 @@ async def voice_sample(cb: CallbackQuery):
     _, eng, lang, name = cb.data.split(":", 3)
     await cb.answer("Готовлю пример")
     try:
-        mp3 = await voice.speak(SAMPLES[lang], lang, name)
+        mp3 = await voice.speak(SAMPLES[lang], lang, name,
+                                force={"gm": "gemini", "az": "azure"}.get(eng))
         if eng == "el":
             db.log_gen(cb.from_user.id, cb.from_user.full_name, "voice", "eleven-v3", 0, 0.01, "ok")
         title = next((t for t, v in AZURE_VOICES[lang].items() if v == name), name) if eng == "az" else name
@@ -1183,8 +1200,12 @@ async def voice_set(cb: CallbackQuery):
         await cb.answer("Только для руководителя", show_alert=True)
         return
     _, eng, lang, name = cb.data.split(":", 3)
-    if eng == "az":
+    if eng == "gm":
+        db.set_setting(f"gemini_{lang}", name)
+        db.set_setting(f"engine_{lang}", "gemini")
+    elif eng == "az":
         db.set_setting(f"azure_{lang}", name)
+        db.set_setting(f"engine_{lang}", "azure")
     else:
         db.set_voice(name)
     await cb.message.edit_reply_markup(reply_markup=None)

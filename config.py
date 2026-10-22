@@ -106,6 +106,14 @@ AZURE_RATE = os.getenv("AZURE_RATE", "+4%")
 AVATAR_MODEL = "fal-ai/kling-video/ai-avatar/v2/standard"
 AVATAR_USD_PER_SEC = 0.0562
 
+# Естественные голоса Google Gemini TTS (ключ из Google AI Studio). Модель можно сменить в .env.
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_TTS_MODELS = [m for m in (os.getenv("GEMINI_TTS_MODEL", "gemini-3.1-flash-tts-preview"),
+                                 "gemini-2.5-flash-preview-tts") if m]
+GEMINI_VOICES = {"Puck": "бодрый муж.", "Fenrir": "азартный муж.", "Orus": "уверенный муж.",
+                 "Zephyr": "яркий жен.", "Leda": "юный жен.", "Aoede": "лёгкий жен."}
+GEMINI_DEFAULT = "Puck"
+
 # Синхронизация губ: sync.so lipsync-2, $3 за минуту
 LIPSYNC_MODEL = "fal-ai/sync-lipsync/v2"
 LIPSYNC_USD_PER_SEC = 0.05
