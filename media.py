@@ -179,8 +179,10 @@ def cleanup(*paths: Path) -> None:
             pass
 
 
-async def scene_audio(src: Path, delay: float, total: float) -> Path:
-    """Голос сцены ровно на total секунд: пауза delay в начале, тишина в конце."""
+async def scene_audio(src: Path, delay: float, total: float | None = None, tail: float = 0.5) -> Path:
+    """Голос сцены: пауза delay в начале, тишина в конце. total=None — по длине реплики (без обрезки)."""
+    if total is None:
+        total = delay + await duration(src) + tail
     dst = new_path("m4a")
     ms = int(delay * 1000)
     await _run("ffmpeg", "-y", "-loglevel", "error", "-i", str(src), "-af",

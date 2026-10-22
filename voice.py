@@ -36,8 +36,17 @@ STRESS_WAYS = {
 STRESS_DEFAULT = {"ru": "loza", "uz": "plain"}
 
 
+GEMINI_STRESS_DEFAULT = {"ru": "mark", "uz": "mark"}
+
+
+def stress_key(lang: str) -> str:
+    """Своя настройка ударения для каждого движка: Google и Azure читают подсказки по-разному."""
+    return f"stress_g_{lang}" if use_gemini(lang) else f"stress2_{lang}"
+
+
 def stress_way(lang: str) -> str:
-    return db.get_setting(f"stress2_{lang}", STRESS_DEFAULT[lang])
+    default = GEMINI_STRESS_DEFAULT[lang] if use_gemini(lang) else STRESS_DEFAULT[lang]
+    return db.get_setting(stress_key(lang), default)
 
 
 def _mark_name(text: str, lang: str, way: str, azure: bool) -> str:
@@ -152,10 +161,14 @@ async def _azure(text: str, lang: str, voice_name: str | None = None, way: str |
 _STYLE = {
     "ru": "Read aloud in Russian in a warm, playful, natural conversational tone, like a cheerful young guy "
           "talking to a friend in a short Instagram video. Brisk pace, natural pauses, real emotion, "
-          "NOT an announcer or advertisement voice. Text:",
+          "NOT an announcer or advertisement voice. PRONUNCIATION: the name «Лаза» (also «Лазу», «Лазы», "
+          "«Лазой») is said la-ZA with the stress on the LAST syllable, both vowels are «а». Never «ЛА-за», "
+          "never «ло-за». Text:",
     "uz": "Read aloud in Uzbek (Tashkent pronunciation) in a warm, playful, natural conversational tone, like a "
           "cheerful young guy talking to a friend in a short Instagram video. Brisk pace, natural pauses, real "
-          "emotion, NOT an announcer or advertisement voice. Text:",
+          "emotion, NOT an announcer or advertisement voice. PRONUNCIATION: the brand name «Laza» is an Uzbek-"
+          "style word said la-ZA: both letters «a» like in «ota», stress on the LAST syllable. Never the English "
+          "«Leyza» / «Lay-za». Text:",
 }
 
 
@@ -170,7 +183,8 @@ async def _gemini(text: str, lang: str, voice_name: str | None = None, way: str 
 async def _gemini_call(text: str, lang: str, voice_name: str | None = None, way: str | None = None) -> Path:
     """Естественный голос Google Gemini TTS → mp3. Ошибка — исключение (дальше запасной движок)."""
     voice_name = voice_name if voice_name in GEMINI_VOICES else gemini_voice(lang)
-    body_text = _mark_name(strip_tags(text), lang, "loza" if lang == "ru" else (way or "plain"), False)
+    w = way or db.get_setting(f"stress_g_{lang}", GEMINI_STRESS_DEFAULT[lang])
+    body_text = _mark_name(strip_tags(text), lang, "mark" if w.startswith("ipa") else w, False)
     payload = {"contents": [{"parts": [{"text": f"{_STYLE[lang]} {body_text}"}]}],
                "generationConfig": {"responseModalities": ["AUDIO"],
                                     "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": voice_name}}}}}

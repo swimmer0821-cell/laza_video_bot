@@ -954,6 +954,88 @@ async def sc_redo(cb: CallbackQuery, state: FSMContext, bot: Bot):
 
 @router.callback_query(F.data == "scgo", Allowed())
 async def sc_go(cb: CallbackQuery, state: FSMContext, bot: Bot):
+    """Шаг перед оплатой видео: озвучка всех реплик и прослушивание (видео ещё не генерируется)."""
+    data = await state.get_data()
+    imgs = data.get("sc_imgs") or []
+    if not imgs or not all(p and Path(p).exists() for p in imgs):
+        await cb.answer("Картинки устарели — начните заново", show_alert=True)
+        return
+    if cb.from_user.id in BUSY:
+        await cb.answer("Предыдущая генерация ещё идёт", show_alert=True)
+        return
+    lang = data.get("sc_lang") or None
+    if not lang or not any(s.get("voice") for s in data["sc_board"]["scenes"]):
+        await sc_launch(cb, state, bot)   # без голоса — сразу видео
+        return
+    await cb.message.edit_reply_markup(reply_markup=None)
+    await cb.answer("Озвучиваю")
+    BUSY.add(cb.from_user.id)
+    try:
+        await preview_voices(bot, cb.message.chat.id, cb.from_user, state)
+    finally:
+        BUSY.discard(cb.from_user.id)
+
+
+async def preview_voices(bot: Bot, chat_id: int, user, state: FSMContext):
+    data = await state.get_data()
+    sb, lang = data["sc_board"], data["sc_lang"]
+    status = await bot.send_message(chat_id, "🔊 Озвучиваю реплики — послушайте до оплаты видео…")
+    try:
+        for old in SCN_DIR.glob(f"{user.id}_voice*"):
+            old.unlink(missing_ok=True)
+        mp3s, parts, t = [], [], 0.0
+        for i, s in enumerate(sb["scenes"]):
+            if not s.get("voice"):
+                mp3s.append("")
+                continue
+            mp3 = await make_voice(s["voice"], lang)
+            keep = SCN_DIR / f"{user.id}_voice{i}.mp3"
+            shutil.move(str(mp3), keep)
+            db.log_gen(user.id, user.full_name, "voice", "tts", 0, tts_price(s["voice"]), "ok")
+            mp3s.append(str(keep))
+            d = await media.duration(keep)
+            parts.append((keep, t, None))
+            t += d + 0.6
+        track = await media.build_track(parts, t)
+        await state.update_data(sc_voice_mp3=mp3s)
+        _, vid, vo = scenes_price(data["sc_total"], lang, data.get("sc_tpl") in SOUND_TEMPLATES)
+        lines = [f"{i + 1}. «{shown(s['voice'])}»" for i, s in enumerate(sb["scenes"]) if s.get("voice")]
+        await bot.send_audio(chat_id, FSInputFile(track, filename="laza_voice_preview.m4a"),
+                             title=f"Озвучка ролика ({LANGS[lang]})", caption="\n".join(lines))
+        media.cleanup(track)
+        await bot.send_message(chat_id, "Послушайте: реплики целиком, ударение в «Лаза́», голос. "
+                                        "Если всё хорошо — оживляем. Сцены будут такой длины, чтобы реплика "
+                                        "не обрывалась.",
+                               reply_markup=kb([(f"🎬 Оживить и смонтировать — ≈ {usd(vid + vo)}", "scgo2")],
+                                               [("🔁 Озвучить заново", "scvoice"), ("❌ Отмена", "cancel")]))
+    except fal_api.GenError as e:
+        await bot.send_message(chat_id, f"⚠️ {e}", reply_markup=kb([("🔁 Ещё раз", "scvoice")]))
+    except Exception:
+        log.exception("Ошибка предпрослушки")
+        await bot.send_message(chat_id, "⚠️ Не получилось озвучить.", reply_markup=kb([("🔁 Ещё раз", "scvoice")]))
+    finally:
+        try:
+            await status.delete()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+@router.callback_query(F.data == "scvoice", Allowed())
+async def sc_revoice(cb: CallbackQuery, state: FSMContext, bot: Bot):
+    if cb.from_user.id in BUSY:
+        await cb.answer("Предыдущая генерация ещё идёт", show_alert=True)
+        return
+    await cb.message.edit_reply_markup(reply_markup=None)
+    await cb.answer("Озвучиваю заново")
+    BUSY.add(cb.from_user.id)
+    try:
+        await preview_voices(bot, cb.message.chat.id, cb.from_user, state)
+    finally:
+        BUSY.discard(cb.from_user.id)
+
+
+@router.callback_query(F.data == "scgo2", Allowed())
+async def sc_launch(cb: CallbackQuery, state: FSMContext, bot: Bot):
     data = await state.get_data()
     imgs = data.get("sc_imgs") or []
     if not imgs or not all(p and Path(p).exists() for p in imgs):
@@ -990,21 +1072,29 @@ async def run_scenes(bot: Bot, chat_id: int, user, data: dict, state: FSMContext
 
         reuse = data.get("sc_reuse") or {}
 
+        ready = data.get("sc_voice_mp3") or []
+        scene_aud: dict[int, Path] = {}
+
         async def one(i: int, s: dict, img: str) -> Path:
             old = reuse.get(str(i))
             if old and Path(old).exists() and not (lang and s.get("voice")):
                 return Path(old)   # сцена без голоса — берём готовый клип, без новой генерации
             img_url = await fal_api.upload(Path(img))
             if lang and s.get("voice"):
-                mp3 = await make_voice(s["voice"], lang)
-                temp.append(mp3)
-                db.log_gen(user.id, user.full_name, "voice", "tts", 0, tts_price(s["voice"]), "ok")
-                aud = await media.scene_audio(mp3, 0.2, sec)
+                pre = ready[i] if i < len(ready) and ready[i] and Path(ready[i]).exists() else ""
+                if pre:
+                    mp3 = Path(pre)
+                else:
+                    mp3 = await make_voice(s["voice"], lang)
+                    temp.append(mp3)
+                    db.log_gen(user.id, user.full_name, "voice", "tts", 0, tts_price(s["voice"]), "ok")
+                aud = await media.scene_audio(mp3, 0.2)   # длина сцены = длина реплики, без обрезки
                 temp.append(aud)
-                voices.append((aud, i * sec, sec))
-                prompt = (s["motion_prompt"] + " The character talks to the camera, lips precisely synced to the "
-                          "speech, lively facial expressions and natural hand gestures. Keep the character design, "
-                          "body proportions and the scene unchanged.")[:2400]
+                scene_aud[i] = aud
+                prompt = (s["motion_prompt"] + " Only the mascot talks to the camera, lips precisely synced to the "
+                          "speech, lively facial expressions and natural hand gestures. Any other person in the "
+                          "frame keeps the mouth closed and does not speak. Keep the character design, body "
+                          "proportions and the scene unchanged.")[:2400]
                 url = await fal_api.avatar(img_url, await fal_api.upload(aud), prompt)
             else:
                 url = await fal_api.video_part(quiet_m, img_url, s["motion_prompt"], sec)
@@ -1013,7 +1103,12 @@ async def run_scenes(bot: Bot, chat_id: int, user, data: dict, state: FSMContext
             return clip
 
         clips = list(await asyncio.gather(*(one(i, s, img) for i, (s, img) in enumerate(zip(scenes, imgs)))))
-        voices.sort(key=lambda v: v[1])
+        t = 0.0
+        for i, c in enumerate(clips):   # голос — на реальное начало каждой сцены
+            d = await media.duration(c)
+            if i in scene_aud:
+                voices.append((scene_aud[i], t, None))
+            t += d
         kept = _keep_scenes(user.id, imgs, clips, scenes, lang)
         await status.edit_text("🎞 Монтирую…")
         joined = await media.concat(clips, keep_audio=sound)
@@ -1047,7 +1142,7 @@ async def run_scenes(bot: Bot, chat_id: int, user, data: dict, state: FSMContext
                 text=f"{LANGS[other][:2]} {'Узбекская' if other == 'uz' else 'Русская'} версия — ≈ {usd(price)}",
                 callback_data=f"sclang2:{other}")])
         await send_vid(bot, chat_id, FSInputFile(out, filename="laza_scenes.mp4"), supports_streaming=True,
-                             caption=f"✅ Ролик с Лазой, {total} с, {n} сцен", reply_markup=markup)
+                             caption=f"✅ Ролик с Лазой, {sec_total:.0f} с, {n} сцен", reply_markup=markup)
         if sb.get("caption"):
             tags = " ".join(t if t.startswith("#") else "#" + t for t in (sb.get("hashtags") or []))
             await bot.send_message(chat_id, "📝 Подпись для Instagram (нажмите, чтобы скопировать):\n\n"
@@ -1131,7 +1226,8 @@ async def sc_second_lang(cb: CallbackQuery, state: FSMContext, bot: Bot):
     sb2["caption"], sb2["hashtags"] = tr.get("caption", ""), tr.get("hashtags", [])
     lines = [f"{i + 1}. «{shown(s['voice'])}»" for i, s in enumerate(sb2["scenes"]) if s.get("voice")]
     await msg.edit_text(f"{LANGS[lang]} — реплики:\n" + "\n".join(lines) + "\n\n🎬 Делаю говорящие сцены…")
-    data2 = dict(data, sc_board=sb2, sc_lang=lang, sc_imgs=kept["imgs"], sc_reuse=kept.get("clips", {}))
+    data2 = dict(data, sc_board=sb2, sc_lang=lang, sc_imgs=kept["imgs"], sc_reuse=kept.get("clips", {}),
+                 sc_voice_mp3=[])
     await state.update_data(sc_board=sb2, sc_lang=lang)
     asyncio.create_task(run_scenes(bot, cb.message.chat.id, cb.from_user, data2, state, price))
 
@@ -1233,7 +1329,7 @@ async def stress_samples(cb: CallbackQuery):
     await cb.answer("Готовлю варианты")
     cur = voice.stress_way(lang)
     for way, title in voice.STRESS_WAYS[lang].items():
-        if way.startswith("ipa") and not voice.use_azure():
+        if way.startswith("ipa") and (voice.use_gemini(lang) or not voice.use_azure()):
             continue
         try:
             mp3 = await voice.speak(STRESS_SAMPLES[lang], lang, way=way)
@@ -1253,7 +1349,7 @@ async def stress_set(cb: CallbackQuery):
         await cb.answer("Только для руководителя", show_alert=True)
         return
     _, lang, way = cb.data.split(":")
-    db.set_setting(f"stress2_{lang}", way)
+    db.set_setting(voice.stress_key(lang), way)
     await cb.answer("Сохранено")
     await cb.message.answer(f"✅ {LANGS[lang]}: ударение — {voice.STRESS_WAYS[lang][way]}. "
                             "Так будет во всех озвучках.")

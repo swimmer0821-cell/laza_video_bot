@@ -126,7 +126,7 @@ traffic, family feasts), never boasts with facts. Speaks simply, warmly, with en
 Russian: natural modern spoken Russian, «ты»-форма. Write the name in Cyrillic: «Лаза» (stress on the last
 syllable is added automatically). Uzbek: natural spoken Uzbek in LATIN script
 (o', g', sh, ch), «sen» form, no Russian words except brand names.
-Speech rate ~13 characters per second. You may add at most 2 ElevenLabs v3 audio tags in English square
+Speech rate ~10 characters per second (relaxed natural voice). You may add at most 2 ElevenLabs v3 audio tags in English square
 brackets for emotion, e.g. [excited], [laughs], [whispers], [cheerfully] — they are not counted in length.
 No emoji, no hashtags, no prices or phone numbers unless the user asked."""
 
@@ -164,8 +164,13 @@ Make a storyboard of N scenes. For EACH scene write:
   "0-1s: ... 1-4s: ...". Main action starts in the first second. When the scene has a voice line the mascot
   talks to the camera with natural gestures. Camera calm. Ice cream cubes stay dry, matte and rigid,
   no melting. End with "Keep the character design and body proportions unchanged."
-- "voice": the line Laza says in this scene in the target language (or "" if no voice). It must fit the
-  scene seconds at ~13 chars/second minus 0.5 s. Scene 1 voice STARTS with the spoken hook.
+- "voice": the line Laza says in this scene in the target language (or "" if no voice). SHORT: at most
+  ~10 characters per scene second (5 s scene = max 45-50 characters), one or two short phrases, so a natural
+  relaxed voice fits. Scene 1 voice STARTS with the spoken hook.
+- TALKING SCENES (voice not empty): Laza is the ONLY character whose face is visible and the only one who talks.
+  Other people may appear only from behind, out of focus, as hands, or far in the background with faces not
+  visible — never a second visible face (lip-sync would make them talk too). Scenes with people's faces and
+  reactions must have voice "".
 - "voice_ru": Russian translation of the voice line ("" if no voice).
 Also write:
 - "hooks": exactly 3 alternative hooks for scene 1, each on a DIFFERENT mechanism, best first:
@@ -187,7 +192,7 @@ Return ONLY JSON: {{"summary_ru": "...", "hooks": [...], "scenes": [{{"title_ru"
 
 async def voice_line(context: str, seconds: float, lang: str, image: Path | None = None) -> dict:
     """Реплика Лазы для готового ролика."""
-    limit = int(seconds * 13)
+    limit = int(seconds * 10)
     text = (f"Target language: {'Uzbek (Latin)' if lang == 'uz' else 'Russian'}.\n"
             f"The video lasts {seconds:.0f} s, so the line must be at most {limit} characters (without tags).\n"
             f"What happens in the video / user idea: «{context or 'Лаза в ролике про мороженое Laza'}».")
@@ -225,7 +230,7 @@ async def storyboard(refs: list[Path], idea: str, n: int, sec: int, lang: str | 
 TRANSLATE_SYS = f"""You adapt a short LAZA video script into another language for the same video.
 {VOICE}
 Rules: keep the meaning, humor and timing; each line must fit the SAME seconds as the original
-(~13 characters per second, leave 0.5 s spare) — shorten if needed. Natural spoken language, not literal.
+(~10 characters per second, leave 0.5 s spare) — shorten if needed. Natural spoken language, not literal.
 Uzbek in LATIN script. Keep "Laza"/«Лаза» as the name. On-screen hook text: max 6 words.
 Return ONLY JSON: {{"voices": ["line for scene 1", ...], "voices_ru": ["Russian meaning of each line", ...],
 "overlay": "on-screen hook text", "caption": "Instagram caption in the target language", "hashtags": ["#...", ...]}}"""
