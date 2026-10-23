@@ -44,6 +44,11 @@ Rules:
   action; if the idea has more actions than fit, keep the most important one and say so in summary_ru.
 - HOOK: the first second must already be the most striking moment (motion, crunch, close-up) — viewers
   decide in 1.5 seconds whether to keep watching. No slow start.
+- PEOPLE: if a person is in the frame, keep EXACTLY the same face, hair, age and clothes in every frame (no
+  identity drift). People do NOT talk and do not move lips as if speaking — a voice-over is added later. They
+  smile, chew, react, look at the camera, show the product. Never write "says", "tells", "talks".
+- PACKAGING: the product package is a rigid printed object — its shape, colors, logo and text stay exactly the
+  same in every frame, never redrawn, never morphing, never new letters.
 - When hands are needed, they enter the frame at 0s already close to the product.
 - Camera: if there is an action, keep the camera almost static (very slight push-in at most).
 - Always end each prompt with: "Ice cream pieces stay dry, matte and rigid, no melting, no liquid, no morphing."
@@ -130,7 +135,9 @@ Speech rate ~10 characters per second (relaxed natural voice). You may add at mo
 brackets for emotion, e.g. [excited], [laughs], [whispers], [cheerfully] — they are not counted in length.
 No emoji, no hashtags, no prices or phone numbers unless the user asked."""
 
-VOICE_SYS = f"""You write a short voice-over line spoken by the LAZA mascot.
+VOICE_SYS = f"""You write a short OFF-SCREEN voice-over line spoken by the LAZA mascot.
+If a person is visible in the video, Laza comments from off-screen as a friend (never pretends to be that person,
+never "I am the ice cream" while someone else is on screen). People in the video do not speak.
 {BRAND}
 {VOICE}
 Return ONLY JSON: {{"text": "line in the target language", "ru": "Russian translation (same as text if Russian)"}}"""

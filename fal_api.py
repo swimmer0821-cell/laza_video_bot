@@ -108,3 +108,22 @@ async def avatar(image_url: str, audio_url: str, prompt: str) -> str:
         return res["video"]["url"]
     except (KeyError, TypeError) as e:
         raise GenError("Сервис не вернул говорящую сцену. Попробуйте ещё раз.") from e
+
+
+PACK_PROMPT = ("The first image is a vertical photo. The second image is the REAL product package. Replace the product "
+               "package in the first image with the exact package from the second image: same shape, colors, label, "
+               "logo and text, copied exactly and fully legible. Keep it in the same place, size, angle and hand as "
+               "the package in the first image. Keep everything else in the first image unchanged: person, face, "
+               "pose, background, light. If there is no package in the first image, place the real package naturally "
+               "in the person's free hand or on the nearest surface. Photorealistic, no new text.")
+
+
+async def put_real_pack(photo_url: str, pack_url: str) -> str:
+    """Подставляет настоящую пачку в первый кадр (Nano Banana Pro, $0.15)."""
+    args = {"prompt": PACK_PROMPT, "image_urls": [photo_url, pack_url], "aspect_ratio": "9:16",
+            "resolution": "2K", "num_images": 1, "output_format": "jpeg"}
+    res = await _call(IMAGE_MODEL, args)
+    try:
+        return res["images"][0]["url"]
+    except (KeyError, IndexError, TypeError) as e:
+        raise GenError("Не получилось подставить пачку.") from e

@@ -59,6 +59,7 @@ class Flow(StatesGroup):
     ref = State()          # админ присылает эталон персонажа
     voice_text = State()   # ждём свой текст для озвучки
     sc_idea = State()      # ждём идею ролика из сцен
+    pack = State()         # ждём фото настоящей пачки (или «пропустить»)
 
 
 # ---------- Доступ ----------
@@ -221,10 +222,64 @@ async def video_photo(msg: Message, state: FSMContext, bot: Bot):
         vert = await extend_photo(msg, raw)
     media.cleanup(raw)
     await state.update_data(src=str(vert), kind="product")
+    await state.set_state(Flow.pack)
+    await msg.answer("📦 Пришлите фото НАСТОЯЩЕЙ пачки Laza (крупно, этикетка читается) — я поставлю её в кадр "
+                     f"вместо той, что на фото (≈ {usd(IMAGE_PRICE_USD)}). ИИ сам рисует пачки неправильно.\n"
+                     "Если на фото уже настоящая пачка — нажмите «Пачка уже настоящая».",
+                     reply_markup=kb([("✅ Пачка уже настоящая", "pack:skip")]))
+
+
+async def ask_idea(msg: Message, state: FSMContext):
     await state.set_state(Flow.idea)
     await msg.answer("Что должно происходить в ролике? Напишите по-русски, например:\n"
-                     "«кубики мороженого падают на стол и хрустят, камера медленно приближается»",
+                     "«кубики мороженого падают на стол и хрустят, камера медленно приближается»\n"
+                     "Люди в кадре не говорят — голос Лазы добавим отдельно кнопкой «🔊 Озвучить».",
                      reply_markup=kb([("🎲 Придумай сам", "idea:auto")]))
+
+
+@router.callback_query(F.data == "pack:skip", Allowed())
+async def pack_skip(cb: CallbackQuery, state: FSMContext):
+    await cb.message.edit_reply_markup(reply_markup=None)
+    await cb.answer()
+    await ask_idea(cb.message, state)
+
+
+@router.message(Flow.pack, NOT_MENU, Allowed())
+async def pack_photo(msg: Message, state: FSMContext, bot: Bot):
+    if not is_image(msg):
+        await msg.answer("Пришлите фото пачки или нажмите «Пачка уже настоящая».")
+        return
+    data = await state.get_data()
+    user = msg.from_user
+    if db.spent_today() + IMAGE_PRICE_USD > DAILY_LIMIT_USD:
+        await msg.answer(f"Дневной лимит {usd(DAILY_LIMIT_USD)} исчерпан.")
+        return
+    pack = await save_photo(bot, msg)
+    status = await msg.answer("📦 Ставлю настоящую пачку в кадр…")
+    try:
+        url = await fal_api.put_real_pack(await fal_api.upload(Path(data["src"])), await fal_api.upload(pack))
+        img = await media.download(url, "jpg")
+        db.log_gen(user.id, user.full_name, "pack", "nano-banana-pro", 0, IMAGE_PRICE_USD, "ok", url)
+        out = await asyncio.to_thread(media.crop_vertical, img)
+        media.cleanup(img)
+        await state.update_data(src=str(out), pack=str(pack))
+        await msg.answer_photo(FSInputFile(out), caption="Первый кадр с настоящей пачкой. Проверьте этикетку.",
+                               reply_markup=kb([("👍 Дальше", "pack:ok")], [("🔁 Ещё раз", "pack:redo")]))
+    except fal_api.GenError as e:
+        await msg.answer(f"⚠️ {e}", reply_markup=kb([("Продолжить без замены", "pack:skip")]))
+    finally:
+        await status.delete()
+
+
+@router.callback_query(F.data.in_({"pack:ok", "pack:redo"}), Allowed())
+async def pack_decide(cb: CallbackQuery, state: FSMContext):
+    await cb.message.edit_reply_markup(reply_markup=None)
+    await cb.answer()
+    if cb.data == "pack:ok":
+        await ask_idea(cb.message, state)
+    else:
+        await state.set_state(Flow.pack)
+        await cb.message.answer("Пришлите фото пачки ещё раз (можно другое, крупнее).")
 
 
 async def extend_photo(msg: Message, raw: Path) -> Path:
@@ -374,7 +429,8 @@ async def idea_auto(cb: CallbackQuery, state: FSMContext):
 async def pick_duration(cb: CallbackQuery, state: FSMContext):
     sec = int(cb.data.split(":")[1])
     await state.update_data(sec=sec)
-    rows = [[(f"{m.title} — {usd(m.price(sec))}", f"mdl:{m.key}")] for m in VIDEO_MODELS.values()]
+    rows = [[(f"{m.title} — {usd(m.price(sec))}", f"mdl:{m.key}")] for m in VIDEO_MODELS.values()
+            if not (m.fixed_part and sec > m.fixed_part)]   # склейка из кусков у черновой модели «плывёт»
     await cb.message.edit_text(f"Длина: {sec} с. Выберите качество (цена за весь ролик):",
                                reply_markup=kb(*rows))
     await cb.answer()
