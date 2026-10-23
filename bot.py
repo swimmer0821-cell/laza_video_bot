@@ -210,21 +210,40 @@ async def video_start(msg: Message, state: FSMContext):
                      "Фото станет первым кадром ролика. Горизонтальное фото я дострою до вертикали (≈ 0,15 $).")
 
 
+ALBUMS: dict[str, list] = {}   # фото, пришедшие одним альбомом: первое — кадр, второе — пачка
+
+
 @router.message(Flow.photo, NOT_MENU, Allowed())
 async def video_photo(msg: Message, state: FSMContext, bot: Bot):
     if not is_image(msg):
         await msg.answer("Нужна фотография. Пришлите фото товара или /cancel для отмены.")
         return
     raw = await save_photo(bot, msg)
+    pack = None
+    if msg.media_group_id:   # альбом: Telegram присылает фото отдельными сообщениями почти одновременно
+        gid = str(msg.media_group_id)
+        first = gid not in ALBUMS
+        ALBUMS.setdefault(gid, []).append((msg.message_id, raw))
+        if not first:
+            return
+        await asyncio.sleep(2.5)
+        items = [p for _, p in sorted(ALBUMS.pop(gid, []))]
+        raw, pack = items[0], (items[1] if len(items) > 1 else None)
+        for extra in items[2:]:
+            media.cleanup(extra)
     if await asyncio.to_thread(media.is_vertical, raw):
         vert = await asyncio.to_thread(media.crop_vertical, raw)
     else:
         vert = await extend_photo(msg, raw)
     media.cleanup(raw)
     await state.update_data(src=str(vert), kind="product")
+    if pack:
+        await msg.answer("📦 Второе фото альбома — это пачка, ставлю её в кадр.")
+        await apply_pack(msg, state, msg.from_user, pack)
+        return
     await state.set_state(Flow.pack)
-    await msg.answer("📦 Пришлите фото НАСТОЯЩЕЙ пачки Laza (крупно, этикетка читается) — я поставлю её в кадр "
-                     f"вместо той, что на фото (≈ {usd(IMAGE_PRICE_USD)}). ИИ сам рисует пачки неправильно.\n"
+    await msg.answer("📦 Теперь пришлите фото НАСТОЯЩЕЙ пачки Laza отдельным сообщением (крупно, этикетка "
+                     f"читается) — поставлю её в кадр (≈ {usd(IMAGE_PRICE_USD)}). ИИ сам рисует пачки неправильно.\n"
                      "Если на фото уже настоящая пачка — нажмите «Пачка уже настоящая».",
                      reply_markup=kb([("✅ Пачка уже настоящая", "pack:skip")]))
 
@@ -249,12 +268,15 @@ async def pack_photo(msg: Message, state: FSMContext, bot: Bot):
     if not is_image(msg):
         await msg.answer("Пришлите фото пачки или нажмите «Пачка уже настоящая».")
         return
+    await apply_pack(msg, state, msg.from_user, await save_photo(bot, msg))
+
+
+async def apply_pack(msg: Message, state: FSMContext, user, pack: Path):
+    """Ставит настоящую пачку в первый кадр и показывает результат на проверку."""
     data = await state.get_data()
-    user = msg.from_user
     if db.spent_today() + IMAGE_PRICE_USD > DAILY_LIMIT_USD:
         await msg.answer(f"Дневной лимит {usd(DAILY_LIMIT_USD)} исчерпан.")
         return
-    pack = await save_photo(bot, msg)
     status = await msg.answer("📦 Ставлю настоящую пачку в кадр…")
     try:
         url = await fal_api.put_real_pack(await fal_api.upload(Path(data["src"])), await fal_api.upload(pack))
@@ -263,7 +285,9 @@ async def pack_photo(msg: Message, state: FSMContext, bot: Bot):
         out = await asyncio.to_thread(media.crop_vertical, img)
         media.cleanup(img)
         await state.update_data(src=str(out), pack=str(pack))
-        await msg.answer_photo(FSInputFile(out), caption="Первый кадр с настоящей пачкой. Проверьте этикетку.",
+        await state.set_state(Flow.pack)
+        await msg.answer_photo(FSInputFile(out), caption="Первый кадр с настоящей пачкой. Проверьте этикетку — "
+                               "видео начнётся с этого кадра.",
                                reply_markup=kb([("👍 Дальше", "pack:ok")], [("🔁 Ещё раз", "pack:redo")]))
     except fal_api.GenError as e:
         await msg.answer(f"⚠️ {e}", reply_markup=kb([("Продолжить без замены", "pack:skip")]))
