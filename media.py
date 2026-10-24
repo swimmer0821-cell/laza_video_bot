@@ -71,6 +71,14 @@ async def last_frame(video: Path) -> Path:
     return dst
 
 
+async def first_frame(video: Path) -> Path:
+    """Первый кадр ролика — стартовый кадр для говорящей версии."""
+    dst = new_path("jpg")
+    await _run("ffmpeg", "-y", "-loglevel", "error", "-i", str(video),
+               "-frames:v", "1", "-q:v", "2", str(dst))
+    return dst
+
+
 async def has_audio(video: Path) -> bool:
     out = await _run("ffprobe", "-v", "error", "-select_streams", "a", "-show_entries",
                      "stream=index", "-of", "csv=p=0", str(video))

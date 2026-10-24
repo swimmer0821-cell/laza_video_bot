@@ -712,6 +712,8 @@ def after_voice_kb(kind: str, seconds: float) -> InlineKeyboardMarkup:
     rows = []
     if kind in ("character", "scenes"):
         rows.append([(f"👄 Синхронизировать губы — ≈ {usd(LIPSYNC_USD_PER_SEC * seconds)}", "lips")])
+    if kind == "product":
+        rows.append([(f"🗣 Говорит в кадре (Kling Avatar) — ≈ {usd(AVATAR_USD_PER_SEC * seconds)}", "avatar")])
     rows.append([("🔊 Другая озвучка", "voice")])
     return kb(*rows)
 
@@ -803,6 +805,73 @@ async def run_lips(bot: Bot, chat_id: int, user, data: dict, sec: float, price: 
     finally:
         BUSY.discard(user.id)
         await status.delete()
+        media.cleanup(*temp)
+
+
+# ---------- 🗣 Говорит в кадре: Kling AI Avatar по первому кадру ролика ----------
+AVATAR_PROMPT = ("The person in the image speaks naturally to the camera with accurate lip sync, small natural head "
+                 "movements, friendly expression. Hands and any product they hold stay still: the product keeps "
+                 "exactly the same size, shape and label and never moves toward the camera. Background stays the "
+                 "same. Realistic, natural skin, no beauty filter.")
+
+
+@router.callback_query(F.data == "avatar", Allowed())
+async def avatar_cb(cb: CallbackQuery, state: FSMContext, bot: Bot):
+    data = await last_ok(cb, state)
+    if not data:
+        return
+    if not data.get("voice_track") or not Path(data["voice_track"]).exists():
+        await cb.answer("Сначала озвучьте ролик", show_alert=True)
+        return
+    uid = cb.from_user.id
+    if uid in BUSY:
+        await cb.answer("Предыдущая генерация ещё идёт", show_alert=True)
+        return
+    sec = await media.duration(Path(data["voice_track"]))
+    price = round(AVATAR_USD_PER_SEC * sec, 2)
+    if db.spent_today() + price > DAILY_LIMIT_USD:
+        await cb.answer(f"Дневной лимит {usd(DAILY_LIMIT_USD)} будет превышен", show_alert=True)
+        return
+    await cb.message.edit_reply_markup(reply_markup=None)
+    await cb.answer("Запускаю")
+    BUSY.add(uid)
+    asyncio.create_task(run_avatar(bot, cb.message.chat.id, cb.from_user, data, sec, price))
+
+
+async def run_avatar(bot: Bot, chat_id: int, user, data: dict, sec: float, price: float):
+    temp: list[Path] = []
+    status = await bot.send_message(chat_id, "🗣 Делаю говорящую версию… (3–8 минут)")
+    try:
+        src = data.get("src")
+        if src and Path(src).exists():
+            frame = Path(src)
+        else:
+            frame = await media.first_frame(Path(data["last_video"]))
+            temp.append(frame)
+        url = await fal_api.avatar(await fal_api.upload(frame), await fal_api.upload(Path(data["voice_track"])),
+                                   AVATAR_PROMPT)
+        out = await media.download(url, "mp4")
+        temp.append(out)
+        final = await media.fit_telegram(out)
+        if final not in temp:
+            temp.append(final)
+        db.log_gen(user.id, user.full_name, "avatar", "kling-ai-avatar-v2", int(sec), price, "ok")
+        await send_vid(bot, chat_id, FSInputFile(final, filename="laza_talk.mp4"), supports_streaming=True,
+                       caption=f"✅ Говорит в кадре, губы по голосу · Kling Avatar, ≈ {usd(price)}")
+        log.info("Говорящая версия готова %s", user.id)
+    except fal_api.GenError as e:
+        db.log_gen(user.id, user.full_name, "avatar", "kling-ai-avatar-v2", int(sec), 0, "error")
+        await bot.send_message(chat_id, f"⚠️ {e}")
+    except Exception:
+        log.exception("Ошибка говорящей версии")
+        db.log_gen(user.id, user.full_name, "avatar", "kling-ai-avatar-v2", int(sec), 0, "error")
+        await bot.send_message(chat_id, "⚠️ Не получилось сделать говорящую версию. Попробуйте ещё раз.")
+    finally:
+        BUSY.discard(user.id)
+        try:
+            await status.delete()
+        except Exception:  # noqa: BLE001
+            pass
         media.cleanup(*temp)
 
 
