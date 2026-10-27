@@ -5,7 +5,7 @@ from pathlib import Path
 
 import fal_client
 
-from config import AVATAR_MODEL, IMAGE_MODEL, LIPSYNC_MODEL, TTS_MODEL, VideoModel
+from config import AVATAR_MODEL, IMAGE_MODEL, KLING_VIA_HF, LIPSYNC_MODEL, TTS_MODEL, VideoModel
 
 
 class GenError(Exception):
@@ -46,6 +46,9 @@ async def video_part(model: VideoModel, image_url: str, prompt: str, seconds: in
         sec = min(10, max(6, seconds + seconds % 2))   # LTX-2.3 Fast: только 6, 8 или 10 с
         args = {"image_url": image_url, "prompt": prompt, "duration": sec, "resolution": "1080p",
                 "aspect_ratio": "9:16", "generate_audio": True}
+    elif model.key == "kling" and KLING_VIA_HF:
+        import hf_api   # здесь, а не вверху файла: hf_api сам импортирует fal_api
+        return await hf_api.kling(image_url, prompt, seconds)
     elif model.key == "kling":
         args = {"image_url": image_url, "prompt": prompt, "duration": str(seconds), "generate_audio": False}
     else:  # seedance

@@ -20,6 +20,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 FAL_KEY = os.getenv("FAL_KEY", "")            # fal_client читает его сам из окружения
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 HF_KEY = os.getenv("HF_KEY", "")              # Higgsfield API «id:секрет»; библиотека читает его сама из окружения
+KLING_VIA_HF = ":" in HF_KEY                  # есть ключ Higgsfield — Kling 3.0 идёт через него (вдвое дешевле)
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-5-5")
 
 ADMIN_IDS = _ids("ADMIN_IDS")                 # могут добавлять людей и менять эталоны
@@ -80,8 +81,12 @@ VIDEO_MODELS: dict[str, VideoModel] = {
     # Тест с 27.10.2026: LTX-2.3 Fast — 1080p, со звуком, $0.06/с, длина только 6/8/10 с за запуск
     "ltx": VideoModel("ltx", "Дёшево · LTX-2.3 со звуком", "fal-ai/ltx-2.3/image-to-video/fast",
                       10, 6, 0, 0.06, 0, "со звуком, 1080p", even=True),
-    "kling": VideoModel("kling", "Хорошо · Kling 3.0", "fal-ai/kling-video/o3/standard/image-to-video",
-                        15, 3, 0, 0.084, 0, "без звука"),
+    # С ключом Higgsfield Kling идёт через Higgsfield API: 0,042 $/с (скидка 50% на 27.10.2026, без звука);
+    # без ключа — через fal.ai за 0,084 $/с. Если скидка закончится, цена станет как на fal.ai.
+    "kling": (VideoModel("kling", "Хорошо · Kling 3.0", "kling-video/v3.0/std/image-to-video",
+                         15, 3, 0, 0.042, 0, "без звука, через Higgsfield") if KLING_VIA_HF else
+              VideoModel("kling", "Хорошо · Kling 3.0", "fal-ai/kling-video/o3/standard/image-to-video",
+                         15, 3, 0, 0.084, 0, "без звука")),
     "seed": VideoModel("seed", "Отлично · Seedance 2.0", "bytedance/seedance-2.0/fast/image-to-video",
                        15, 4, 0, 0.2419, 0, "со звуком, 720p"),
     "seed1080": VideoModel("seed1080", "Максимум · Seedance 2.0 1080p", "bytedance/seedance-2.0/image-to-video",

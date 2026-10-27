@@ -3,11 +3,12 @@
 Ключ — HF_KEY в .env в виде «id_ключа:секрет» (open.higgsfield.ai → API Keys).
 Сейчас отсюда работает «Повтор тренда»: Genjutsu Light переносит движения из чужого видео
 на нашего персонажа или человека с фото. Звук исходного видео сохраняется.
+Ещё через Higgsfield идёт кнопка «Хорошо · Kling 3.0» (вдвое дешевле, чем на fal.ai), если задан HF_KEY.
 """
 import logging
 from pathlib import Path
 
-from config import GENJUTSU_MODEL, HF_KEY
+from config import GENJUTSU_MODEL, HF_KEY, VIDEO_MODELS
 from fal_api import GenError
 
 
@@ -55,6 +56,21 @@ async def motion_transfer(video: Path, image: Path, resolution: str, prompt: str
     except GenError:
         raise
     except Exception as e:  # noqa: BLE001 — переводим любую ошибку в понятный текст
+        logging.exception("Higgsfield ошибка")
+        raise GenError(_human(e)) from e
+    logging.info("Higgsfield ответ: %s", str(res)[:500])
+    return _video_url(res)
+
+
+async def kling(image_url: str, prompt: str, seconds: int) -> str:
+    """Kling 3.0 Standard через Higgsfield: картинка (публичная ссылка) + промт → mp4 без звука."""
+    import higgsfield_client
+    endpoint = VIDEO_MODELS["kling"].endpoint
+    args = {"image_url": image_url, "prompt": prompt, "duration": max(3, min(15, int(seconds))), "sound": "off"}
+    try:
+        logging.info("Higgsfield → %s %s", endpoint, {"duration": args["duration"]})
+        res = await higgsfield_client.subscribe_async(endpoint, arguments=args)
+    except Exception as e:  # noqa: BLE001
         logging.exception("Higgsfield ошибка")
         raise GenError(_human(e)) from e
     logging.info("Higgsfield ответ: %s", str(res)[:500])
