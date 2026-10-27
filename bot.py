@@ -359,10 +359,10 @@ async def char_photo(msg: Message, state: FSMContext, bot: Bot):
 
 @router.callback_query(F.data == "cphoto:none", Allowed())
 async def char_nophoto(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()   # отвечаем сразу: картинка рисуется дольше, чем Telegram ждёт ответа на кнопку
     await cb.message.edit_reply_markup(reply_markup=None)
     await state.update_data(char_product="")
     await make_char_image(cb.message, state, cb.from_user)
-    await cb.answer()
 
 
 async def make_char_image(msg: Message, state: FSMContext, user):
@@ -1578,6 +1578,9 @@ async def fallback(msg: Message):
 
 @router.errors()
 async def on_error(event: ErrorEvent):
+    if "query is too old" in str(event.exception):   # поздний ответ на кнопку — безвреден, работа уже сделана
+        log.warning("Поздний ответ на кнопку: %s", event.exception)
+        return
     log.exception("Ошибка при обработке: %s", event.exception)
     upd = event.update
     m = upd.message or (upd.callback_query.message if upd.callback_query else None)
