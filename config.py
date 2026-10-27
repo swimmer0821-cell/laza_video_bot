@@ -50,6 +50,7 @@ class VideoModel:
     usd_per_sec: float  # цена за секунду (если 0 — считаем за запуск)
     usd_per_run: float  # цена за запуск (Wan Turbo)
     note: str           # подсказка в кнопке
+    even: bool = False  # модель принимает только чётные секунды (LTX-2.3: 6, 8, 10)
 
     def parts(self, total: int) -> list[int]:
         """Делит длину ролика на части, которые модель умеет за один запуск."""
@@ -58,7 +59,10 @@ class VideoModel:
         n = max(1, math.ceil(total / self.max_part))
         base, extra = divmod(total, n)
         parts = [base + (1 if i < extra else 0) for i in range(n)]
-        return [max(self.min_part, p) for p in parts]
+        parts = [max(self.min_part, p) for p in parts]
+        if self.even:
+            parts = [min(self.max_part, p + p % 2) for p in parts]
+        return parts
 
     def price(self, total: int) -> float:
         """Оценка стоимости ролика в долларах."""
@@ -72,6 +76,9 @@ class VideoModel:
 VIDEO_MODELS: dict[str, VideoModel] = {
     "wan": VideoModel("wan", "Черновик · Wan 2.2 Turbo", "fal-ai/wan/v2.2-a14b/image-to-video/turbo",
                       5, 5, 5, 0, 0.10, "без звука, 720p"),
+    # Тест с 27.10.2026: LTX-2.3 Fast — 1080p, со звуком, $0.06/с, длина только 6/8/10 с за запуск
+    "ltx": VideoModel("ltx", "Дёшево · LTX-2.3 со звуком", "fal-ai/ltx-2.3/image-to-video/fast",
+                      10, 6, 0, 0.06, 0, "со звуком, 1080p", even=True),
     "kling": VideoModel("kling", "Хорошо · Kling 3.0", "fal-ai/kling-video/o3/standard/image-to-video",
                         15, 3, 0, 0.084, 0, "без звука"),
     "seed": VideoModel("seed", "Отлично · Seedance 2.0", "bytedance/seedance-2.0/fast/image-to-video",

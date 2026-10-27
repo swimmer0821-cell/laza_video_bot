@@ -42,6 +42,10 @@ async def video_part(model: VideoModel, image_url: str, prompt: str, seconds: in
     if model.key == "wan":
         args = {"image_url": image_url, "prompt": prompt, "resolution": "720p", "aspect_ratio": "9:16",
                 "video_quality": "high"}
+    elif model.key == "ltx":
+        sec = min(10, max(6, seconds + seconds % 2))   # LTX-2.3 Fast: только 6, 8 или 10 с
+        args = {"image_url": image_url, "prompt": prompt, "duration": sec, "resolution": "1080p",
+                "aspect_ratio": "9:16", "generate_audio": True}
     elif model.key == "kling":
         args = {"image_url": image_url, "prompt": prompt, "duration": str(seconds), "generate_audio": False}
     else:  # seedance
