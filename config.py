@@ -19,6 +19,7 @@ def _ids(name: str) -> set[int]:
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 FAL_KEY = os.getenv("FAL_KEY", "")            # fal_client читает его сам из окружения
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+HF_KEY = os.getenv("HF_KEY", "")              # Higgsfield API «id:секрет»; библиотека читает его сама из окружения
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-5-5")
 
 ADMIN_IDS = _ids("ADMIN_IDS")                 # могут добавлять людей и менять эталоны
@@ -150,3 +151,11 @@ SCENE_TEMPLATES = {   # сюжеты по ядру бренда (эмоции �
 SOUND_TEMPLATES = {"crunch"}   # сцены без голоса — моделью со звуком (Seedance), чтобы был слышен хруст
 SCENE_TEMPLATE = SCENE_TEMPLATES["heat"][1]
 SETTINGS_PATH = DATA_DIR / "settings.json"
+
+
+# «Повтор тренда»: Higgsfield Genjutsu Light — движения из чужого видео переносятся на персонажа с фото.
+# Цены с open.higgsfield.ai на 27.10.2026: сейчас скидка 50%, без скидки вдвое дороже.
+# Для лимита и показа берём цену БЕЗ скидки, чтобы не превысить дневной лимит, если скидка закончится.
+GENJUTSU_MODEL = "higgsfield/genjutsu-light/motion-transfer/v1.0"
+GENJUTSU_USD_PER_SEC = {"480p": 0.05, "720p": 0.10, "1080p": 0.20}
+GENJUTSU_MAX_SEC = 15                         # модель берёт только первые 15 секунд видео

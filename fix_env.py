@@ -51,6 +51,8 @@ def main() -> None:
         s.unlink(missing_ok=True)
     az = values.get("AZURE_SPEECH_KEY", "")
     print(f"== Azure: ключ {'есть' if az else 'НЕТ'}, регион {values.get('AZURE_SPEECH_REGION', 'не указан')}")
+    hf = values.get("HF_KEY", "")
+    print(f"== Higgsfield API: ключ {'есть' if ':' in hf else 'НЕТ (кнопка «Повтор тренда» скрыта)'}")
 
 
 if __name__ == "__main__":
