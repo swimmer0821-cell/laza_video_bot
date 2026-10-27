@@ -29,6 +29,13 @@ def _human(e: Exception) -> str:
 
 def _video_url(res) -> str:
     """Ссылка на готовое видео: в ответе бывает video{url}, videos[{url}] или url."""
+    st = str(res.get("status", "")).lower() if isinstance(res, dict) else ""
+    if st == "nsfw":
+        raise GenError("Higgsfield отклонил видео фильтром безопасности (слишком откровенно или похоже на "
+                       "реального человека/знаменитость). Деньги за отказ не списываются. "
+                       "Попробуйте другое видео: одетый человек, без крупных планов тела.")
+    if st in ("failed", "cancelled", "canceled", "error"):
+        raise GenError("Higgsfield не смог сделать видео. Попробуйте ещё раз или другое видео.")
     if isinstance(res, dict):
         v = res.get("video")
         if isinstance(v, dict) and v.get("url"):
