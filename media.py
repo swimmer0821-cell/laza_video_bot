@@ -121,6 +121,26 @@ async def fit_telegram(video: Path, limit_mb: int = 48) -> Path:
     return dst
 
 
+async def trim(video: Path, seconds: int) -> Path:
+    """Первые seconds секунд видео (со звуком, если он есть)."""
+    dst = new_path("mp4")
+    await _run("ffmpeg", "-y", "-loglevel", "error", "-i", str(video), "-t", str(seconds),
+               "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+               "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(dst))
+    return dst
+
+
+async def add_audio_from(video: Path, src: Path) -> Path:
+    """Если в готовом ролике нет звука — подкладываем звук из исходного видео."""
+    if await has_audio(video) or not await has_audio(src):
+        return video
+    dst = new_path("mp4")
+    await _run("ffmpeg", "-y", "-loglevel", "error", "-i", str(video), "-i", str(src), "-map", "0:v",
+               "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "128k", "-shortest",
+               "-movflags", "+faststart", str(dst))
+    return dst
+
+
 async def duration(path: Path) -> float:
     """Длительность файла в секундах."""
     out = await _run("ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(path))

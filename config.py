@@ -164,3 +164,9 @@ SETTINGS_PATH = DATA_DIR / "settings.json"
 GENJUTSU_MODEL = "higgsfield/genjutsu-light/motion-transfer/v1.0"
 GENJUTSU_USD_PER_SEC = {"480p": 0.05, "720p": 0.10, "1080p": 0.20}
 GENJUTSU_MAX_SEC = 15                         # модель берёт только первые 15 секунд видео
+TREND_LENGTHS = (5, 10, 15)                   # выбор длины ролика: короче — дешевле
+
+# Второй способ «Повтора тренда» — Kling 2.6 Motion Control через fal.ai (баланс fal.ai, не Higgsfield).
+# Цена с fal.ai/kling-motion-control на 30.10.2026: 0.07 $ за секунду готового видео.
+MOTION_FAL_MODEL = "fal-ai/kling-video/v2.6/standard/motion-control"
+MOTION_FAL_USD_PER_SEC = 0.07

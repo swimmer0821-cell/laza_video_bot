@@ -5,7 +5,7 @@ from pathlib import Path
 
 import fal_client
 
-from config import AVATAR_MODEL, IMAGE_MODEL, KLING_VIA_HF, LIPSYNC_MODEL, TTS_MODEL, VideoModel
+from config import AVATAR_MODEL, IMAGE_MODEL, KLING_VIA_HF, LIPSYNC_MODEL, MOTION_FAL_MODEL, TTS_MODEL, VideoModel
 
 
 class GenError(Exception):
@@ -56,6 +56,18 @@ async def video_part(model: VideoModel, image_url: str, prompt: str, seconds: in
                 "resolution": "1080p" if model.key == "seed1080" else "720p",
                 "aspect_ratio": "9:16", "generate_audio": True, "seed": random.randint(1, 2**31 - 1)}
     res = await _call(model.endpoint, args)
+    try:
+        return res["video"]["url"]
+    except (KeyError, TypeError) as e:
+        raise GenError("Сервис не вернул видео. Попробуйте ещё раз.") from e
+
+
+async def motion_control(video_url: str, image_url: str, prompt: str = "") -> str:
+    """«Повтор тренда» через Kling 2.6 Motion Control: движения из видео → персонаж с фото."""
+    args = {"image_url": image_url, "video_url": video_url, "character_orientation": "video"}
+    if prompt:
+        args["prompt"] = prompt
+    res = await _call(MOTION_FAL_MODEL, args)
     try:
         return res["video"]["url"]
     except (KeyError, TypeError) as e:

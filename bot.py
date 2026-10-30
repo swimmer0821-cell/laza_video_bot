@@ -25,7 +25,7 @@ import voice
 from config import (ADMIN_IDS, BOT_TOKEN, DAILY_LIMIT_USD, DATA_DIR, DURATIONS, IMAGE_PRICE_USD, LANGS,
                     LIPSYNC_USD_PER_SEC, LOG_DIR, AZURE_VOICES, REFS_CUSTOM_DIR, REFS_DEFAULT_DIR, SCENE_MODEL, SCENE_PLANS, AVATAR_USD_PER_SEC,
                     SCENE_TEMPLATE, SCENE_TEMPLATES, GEMINI_API_KEY, GEMINI_VOICES, SOUND_TEMPLATES, TTS_USD_PER_1K, VIDEO_MODELS, VOICE_CHOICES,
-                    GENJUTSU_MAX_SEC, GENJUTSU_USD_PER_SEC)
+                    GENJUTSU_MAX_SEC, GENJUTSU_USD_PER_SEC, MOTION_FAL_USD_PER_SEC, TREND_LENGTHS)
 
 # ---------- Лог: в файл (5 МБ × 3) и в консоль ----------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
@@ -42,7 +42,7 @@ BTN_SCENES = "🎞 Ролик с Лазой (сцены)"
 BTN_TREND = "🕺 Повтор тренда"
 MENU = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=BTN_VIDEO), KeyboardButton(text=BTN_CHAR)],
                                      [KeyboardButton(text=BTN_SCENES)]
-                                     + ([KeyboardButton(text=BTN_TREND)] if hf_api.enabled() else []),
+                                     + [KeyboardButton(text=BTN_TREND)],
                                      [KeyboardButton(text=BTN_SPENT), KeyboardButton(text=BTN_HELP)]],
                            resize_keyboard=True)
 NOT_MENU = ~F.text.in_({BTN_VIDEO, BTN_CHAR, BTN_SCENES, BTN_TREND, BTN_SPENT, BTN_HELP})   # кнопки меню работают всегда
@@ -167,8 +167,7 @@ async def start(msg: Message, state: FSMContext):
                      f"{BTN_VIDEO} — пришлите фото товара, получите видео 5–30 с.\n"
                      f"{BTN_CHAR} — Лаза в любой сцене, потом оживляем.\n"
                      f"{BTN_SCENES} — ролик 15–30 с из 3 сцен с голосом Лазы.\n"
-                     + (f"{BTN_TREND} — пришлите трендовое видео, и Лаза или человек с фото повторит движения.\n"
-                        if hf_api.enabled() else "")
+                     + f"{BTN_TREND} — пришлите трендовое видео, и Лаза или человек с фото повторит движения.\n"
                      + "🔊 Любой готовый ролик можно озвучить на русском или узбекском.\n\n"
                      "Перед каждым запуском я покажу цену и спрошу подтверждение.", reply_markup=MENU)
 
@@ -187,8 +186,9 @@ async def help_(msg: Message):
     lines += [f"• Картинка с персонажем — ≈ {usd(IMAGE_PRICE_USD)}",
               "• Озвучка — ≈ 0,01–0,03 $ за реплику",
               f"• Синхронизация губ — ≈ {usd(LIPSYNC_USD_PER_SEC * 5)} за 5 с"]
+    lines += [f"• Повтор тренда (Kling 2.6, fal.ai) — {usd(MOTION_FAL_USD_PER_SEC * 5)} за 5 с"]
     if hf_api.enabled():
-        lines += [f"• Повтор тренда (Higgsfield), 720p — до {usd(GENJUTSU_USD_PER_SEC['720p'] * 5)} за 5 с"]
+        lines += [f"• Повтор тренда (Higgsfield), 480p — до {usd(GENJUTSU_USD_PER_SEC['480p'] * 5)} за 5 с"]
     lines += ["",
               "Советы: фото товара — чёткое, при хорошем свете, товар крупно. "
               "Надписи, цены и логотип добавляйте потом в CapCut: ИИ искажает текст.",
@@ -592,9 +592,6 @@ async def run_video(bot: Bot, chat_id: int, user, data: dict, state: FSMContext)
 # ---------- Режим 4: повтор тренда (Higgsfield Genjutsu Light) ----------
 @router.message(F.text == BTN_TREND, Allowed())
 async def trend_start(msg: Message, state: FSMContext):
-    if not hf_api.enabled():
-        await msg.answer("Режим пока не подключён: нет ключа Higgsfield в настройках бота.")
-        return
     await state.clear()
     await state.set_state(Flow.trend_video)
     await msg.answer("Пришлите видео с движением, которое нужно повторить: танец, жест, трендовый ролик.\n"
@@ -616,12 +613,37 @@ async def trend_video(msg: Message, state: FSMContext, bot: Bot):
     dst = media.new_path("mp4")
     await bot.download(f.file_id, destination=dst)
     dur = await media.duration(dst)
-    sec = max(1, min(GENJUTSU_MAX_SEC, math.ceil(dur)))
-    await state.update_data(trend_video=str(dst), trend_sec=sec)
+    full = max(1, min(GENJUTSU_MAX_SEC, math.ceil(dur)))
+    await state.update_data(trend_video=str(dst), trend_sec=full, trend_full=full)
+    lens = [n for n in TREND_LENGTHS if n < full] + [full]
+    rows = [[(f"{n} с" + (" (всё видео)" if n == full else ""), f"tlen:{n}")] for n in lens]
+    await msg.answer(f"Видео принято ({full} с). Какой длины делать ролик? Короче — дешевле.",
+                     reply_markup=kb(*rows))
+
+
+@router.callback_query(F.data.startswith("tlen:"), Allowed())
+async def trend_len(cb: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    try:
+        n = int(cb.data.split(":", 1)[1])
+    except ValueError:
+        await cb.answer()
+        return
+    if not data.get("trend_video") or not Path(data["trend_video"]).exists():
+        await cb.answer("Данные устарели — начните заново через меню", show_alert=True)
+        return
+    await cb.answer()
+    await cb.message.edit_reply_markup(reply_markup=None)
+    full = data.get("trend_full", GENJUTSU_MAX_SEC)
+    n = max(1, min(n, full))
+    if n < full:
+        cut = await media.trim(Path(data["trend_video"]), n)
+        await state.update_data(trend_video=str(cut))
+    await state.update_data(trend_sec=n)
     await state.set_state(Flow.trend_photo)
-    await msg.answer(f"Видео принято ({sec} с пойдут в работу).\n"
-                     "Теперь фото того, кто будет повторять движения: человек целиком в кадре, хорошо видно лицо. "
-                     "Или нажмите кнопку — возьму Лазу.", reply_markup=kb([("🧸 Лаза", "trend:laza")]))
+    await cb.message.answer(f"Берём {n} с.\n"
+                            "Теперь фото того, кто будет повторять движения: человек целиком в кадре, хорошо видно лицо. "
+                            "Или нажмите кнопку — возьму Лазу.", reply_markup=kb([("🧸 Лаза", "trend:laza")]))
 
 
 @router.message(Flow.trend_photo, NOT_MENU, Allowed())
@@ -649,24 +671,32 @@ async def trend_laza(cb: CallbackQuery, state: FSMContext):
 async def trend_ask_res(msg: Message, state: FSMContext):
     data = await state.get_data()
     sec = data.get("trend_sec", GENJUTSU_MAX_SEC)
-    rows = [[(f"{res} — до {usd(rate * sec)}", f"tres:{res}")] for res, rate in GENJUTSU_USD_PER_SEC.items()]
+    rows = []
+    if hf_api.enabled():
+        rows += [[(f"Higgsfield {res} — до {usd(rate * sec)}", f"tres:{res}")]
+                 for res, rate in GENJUTSU_USD_PER_SEC.items()]
+    rows.append([(f"Kling 2.6 (fal.ai) — {usd(MOTION_FAL_USD_PER_SEC * sec)}", "tres:kling")])
     rows.append([("Отмена", "cancel")])
     await state.set_state(Flow.pick)
-    await msg.answer(f"Качество? Ролик {sec} с.\nЦена указана без скидки; пока у Higgsfield скидка 50%, "
-                     "реально спишется примерно вдвое меньше.", reply_markup=kb(*rows))
+    await msg.answer(f"Чем делать? Ролик {sec} с.\n"
+                     "• Higgsfield — платится с баланса Higgsfield API; цены в боте примерные, могут быть выше.\n"
+                     "• Kling 2.6 — платится с баланса fal.ai (как остальные ролики бота), цена точная.",
+                     reply_markup=kb(*rows))
 
 
 @router.callback_query(F.data.startswith("tres:"), Allowed())
 async def trend_res(cb: CallbackQuery, state: FSMContext):
     res = cb.data.split(":", 1)[1]
-    if res not in GENJUTSU_USD_PER_SEC:
+    if res != "kling" and res not in GENJUTSU_USD_PER_SEC:
         await cb.answer()
         return
     data = await state.get_data()
-    price = round(GENJUTSU_USD_PER_SEC[res] * data.get("trend_sec", GENJUTSU_MAX_SEC), 2)
+    rate = MOTION_FAL_USD_PER_SEC if res == "kling" else GENJUTSU_USD_PER_SEC[res]
+    price = round(rate * data.get("trend_sec", GENJUTSU_MAX_SEC), 2)
     await state.update_data(trend_res=res, trend_price=price)
     await cb.message.edit_reply_markup(reply_markup=None)
-    await cb.message.answer(f"🕺 Повтор тренда: {data.get('trend_who', 'фото')}, {res}, {data.get('trend_sec')} с.\n"
+    await cb.message.answer(f"🕺 Повтор тренда: {data.get('trend_who', 'фото')}, "
+                            f"{'Kling 2.6 (fal.ai)' if res == 'kling' else 'Higgsfield ' + res}, {data.get('trend_sec')} с.\n"
                             f"Цена — до {usd(price)}. Запускаем?",
                             reply_markup=kb([("▶️ Запустить", "tgo")], [("Отмена", "cancel")]))
     await cb.answer()
@@ -694,29 +724,40 @@ async def trend_go(cb: CallbackQuery, state: FSMContext, bot: Bot):
 
 async def run_trend(bot: Bot, chat_id: int, user, data: dict, state: FSMContext):
     temp: list[Path] = []
-    status = await bot.send_message(chat_id, "⏳ Higgsfield переносит движения… Обычно 2–6 минут. "
-                                             "Можно пользоваться ботом дальше.")
     sec, res, price = data["trend_sec"], data["trend_res"], data["trend_price"]
+    svc = "Kling 2.6" if res == "kling" else "Higgsfield"
+    model_name = "kling2.6-motion" if res == "kling" else "genjutsu-light"
+    status = await bot.send_message(chat_id, f"⏳ {svc} переносит движения… Обычно 2–6 минут. "
+                                             "Можно пользоваться ботом дальше.")
     log.info("Тренд старт %s %s %s с", user.id, res, sec)
     try:
-        url = await hf_api.motion_transfer(Path(data["trend_video"]), Path(data["trend_image"]), res)
+        if res == "kling":
+            v_url = await fal_api.upload(Path(data["trend_video"]))
+            i_url = await fal_api.upload(Path(data["trend_image"]))
+            url = await fal_api.motion_control(v_url, i_url)
+        else:
+            url = await hf_api.motion_transfer(Path(data["trend_video"]), Path(data["trend_image"]), res)
         clip = await media.download(url, "mp4")
         temp.append(clip)
+        if res == "kling":
+            clip = await media.add_audio_from(clip, Path(data["trend_video"]))
+            if clip not in temp:
+                temp.append(clip)
         final = await media.fit_telegram(clip)
         if final not in temp:
             temp.append(final)
-        db.log_gen(user.id, user.full_name, "trend", "genjutsu-light", sec, price, "ok", url)
+        db.log_gen(user.id, user.full_name, "trend", model_name, sec, price, "ok", url)
         await remember(state, user.id, final, "trend", f"Повтор тренда: {data.get('trend_who', '')}")
         await send_vid(bot, chat_id, FSInputFile(final, filename="laza_trend.mp4"), supports_streaming=True,
-                       caption=f"✅ Повтор тренда, {res}, {sec} с, до {usd(price)}",
+                       caption=f"✅ Повтор тренда, {svc}{'' if res == 'kling' else ' ' + res}, {sec} с, до {usd(price)}",
                        reply_markup=kb([("🔁 Ещё вариант", "tgo")]))
         log.info("Тренд готов %s", user.id)
     except fal_api.GenError as e:
-        db.log_gen(user.id, user.full_name, "trend", "genjutsu-light", sec, 0, "error")
+        db.log_gen(user.id, user.full_name, "trend", model_name, sec, 0, "error")
         await bot.send_message(chat_id, f"⚠️ {e}")
     except Exception:
         log.exception("Ошибка тренда")
-        db.log_gen(user.id, user.full_name, "trend", "genjutsu-light", sec, 0, "error")
+        db.log_gen(user.id, user.full_name, "trend", model_name, sec, 0, "error")
         await bot.send_message(chat_id, "⚠️ Что-то пошло не так. Попробуйте ещё раз.")
     finally:
         BUSY.discard(user.id)
