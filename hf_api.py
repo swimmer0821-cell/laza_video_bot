@@ -35,6 +35,14 @@ def _video_url(res) -> str:
                        "реального человека/знаменитость). Деньги за отказ не списываются. "
                        "Попробуйте другое видео: одетый человек, без крупных планов тела.")
     if st in ("failed", "cancelled", "canceled", "error"):
+        err = str(res.get("error") or "")
+        if err:
+            msg = _human(Exception(err))
+            if "закончились деньги" in msg:
+                msg = ("На балансе Higgsfield API не хватает денег на этот ролик (цены в боте могут быть "
+                       "ниже настоящих). Пополните: open.higgsfield.ai → Billing, или выберите качество "
+                       "пониже / видео короче. Деньги за отказ не списываются.")
+            raise GenError(msg)
         raise GenError("Higgsfield не смог сделать видео. Попробуйте ещё раз или другое видео.")
     if isinstance(res, dict):
         v = res.get("video")
