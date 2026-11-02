@@ -67,6 +67,7 @@ class Flow(StatesGroup):
     pack = State()         # ждём фото настоящей пачки (или «пропустить»)
     trend_video = State()  # «Повтор тренда»: ждём видео с движением
     trend_photo = State()  # «Повтор тренда»: ждём фото того, кто будет двигаться
+    trend_photo2 = State()  # «Повтор тренда»: второй персонаж (по желанию), если в видео двое
 
 
 # ---------- Доступ ----------
@@ -653,7 +654,7 @@ async def trend_photo(msg: Message, state: FSMContext, bot: Bot):
         return
     p = await save_photo(bot, msg)
     await state.update_data(trend_image=str(p), trend_who="фото")
-    await trend_ask_res(msg, state)
+    await trend_ask_second(msg, state)
 
 
 @router.callback_query(F.data == "trend:laza", Allowed())
@@ -665,6 +666,36 @@ async def trend_laza(cb: CallbackQuery, state: FSMContext):
         return
     await cb.message.edit_reply_markup(reply_markup=None)
     await state.update_data(trend_image=str(r[0]), trend_who="Лаза")
+    await trend_ask_second(cb.message, state)
+
+
+async def trend_ask_second(msg: Message, state: FSMContext):
+    """Если в видео двое — второй персонаж заменит второго человека (только Higgsfield)."""
+    if not hf_api.enabled():
+        await trend_ask_res(msg, state)
+        return
+    await state.set_state(Flow.trend_photo2)
+    await msg.answer("В видео двое людей? Пришлите фото второго персонажа — он заменит второго человека.\n"
+                     "Если в видео один человек, нажмите кнопку.",
+                     reply_markup=kb([("👤 Один персонаж", "trend:one")]))
+
+
+@router.message(Flow.trend_photo2, NOT_MENU, Allowed())
+async def trend_photo2(msg: Message, state: FSMContext, bot: Bot):
+    if not is_image(msg):
+        await msg.answer("Пришлите фото второго персонажа или нажмите «Один персонаж».")
+        return
+    p = await save_photo(bot, msg)
+    data = await state.get_data()
+    await state.update_data(trend_image2=str(p), trend_who=f"{data.get('trend_who', 'фото')} + второй персонаж")
+    await trend_ask_res(msg, state)
+
+
+@router.callback_query(F.data == "trend:one", Allowed())
+async def trend_one(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
+    await cb.message.edit_reply_markup(reply_markup=None)
+    await state.update_data(trend_image2=None)
     await trend_ask_res(cb.message, state)
 
 
@@ -675,7 +706,9 @@ async def trend_ask_res(msg: Message, state: FSMContext):
     if hf_api.enabled():
         rows += [[(f"Higgsfield {res} — до {usd(rate * sec)}", f"tres:{res}")]
                  for res, rate in GENJUTSU_USD_PER_SEC.items()]
-    rows.append([(f"Kling 2.6 (fal.ai) — {usd(MOTION_FAL_USD_PER_SEC * sec)}", "tres:kling")])
+    two = bool(data.get("trend_image2"))
+    if not two:   # Kling Motion Control переносит движения только на одного персонажа
+        rows.append([(f"Kling 2.6 (fal.ai) — {usd(MOTION_FAL_USD_PER_SEC * sec)}", "tres:kling")])
     rows.append([("Отмена", "cancel")])
     await state.set_state(Flow.pick)
     await msg.answer(f"Чем делать? Ролик {sec} с.\n"
@@ -687,10 +720,10 @@ async def trend_ask_res(msg: Message, state: FSMContext):
 @router.callback_query(F.data.startswith("tres:"), Allowed())
 async def trend_res(cb: CallbackQuery, state: FSMContext):
     res = cb.data.split(":", 1)[1]
-    if res != "kling" and res not in GENJUTSU_USD_PER_SEC:
+    data = await state.get_data()
+    if (res != "kling" and res not in GENJUTSU_USD_PER_SEC) or (res == "kling" and data.get("trend_image2")):
         await cb.answer()
         return
-    data = await state.get_data()
     rate = MOTION_FAL_USD_PER_SEC if res == "kling" else GENJUTSU_USD_PER_SEC[res]
     price = round(rate * data.get("trend_sec", GENJUTSU_MAX_SEC), 2)
     await state.update_data(trend_res=res, trend_price=price)
@@ -736,7 +769,10 @@ async def run_trend(bot: Bot, chat_id: int, user, data: dict, state: FSMContext)
             i_url = await fal_api.upload(Path(data["trend_image"]))
             url = await fal_api.motion_control(v_url, i_url)
         else:
-            url = await hf_api.motion_transfer(Path(data["trend_video"]), Path(data["trend_image"]), res)
+            imgs = [Path(data["trend_image"])]
+            if data.get("trend_image2") and Path(data["trend_image2"]).exists():
+                imgs.append(Path(data["trend_image2"]))
+            url = await hf_api.motion_transfer(Path(data["trend_video"]), imgs, res)
         clip = await media.download(url, "mp4")
         temp.append(clip)
         if res == "kling":

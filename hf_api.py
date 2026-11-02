@@ -59,14 +59,16 @@ def _video_url(res) -> str:
     raise GenError("Higgsfield не вернул видео. Попробуйте ещё раз.")
 
 
-async def motion_transfer(video: Path, image: Path, resolution: str, prompt: str = "") -> str:
-    """Движение из video → персонаж с image. Возвращает ссылку на mp4."""
+async def motion_transfer(video: Path, images: list[Path] | Path, resolution: str, prompt: str = "") -> str:
+    """Движение из video → персонажи с картинок (1 или 2: первый, второй человек в видео). Ссылка на mp4."""
     import higgsfield_client  # библиотека ставится вместе с ботом (requirements.txt)
+    if isinstance(images, Path):
+        images = [images]
     try:
         video_url = await higgsfield_client.upload_file_async(video)
-        image_url = await higgsfield_client.upload_file_async(image)
-        args = {"prompt": prompt, "video_url": video_url, "image_urls": [image_url], "resolution": resolution}
-        logging.info("Higgsfield → %s %s", GENJUTSU_MODEL, {"resolution": resolution})
+        image_urls = [await higgsfield_client.upload_file_async(i) for i in images]
+        args = {"prompt": prompt, "video_url": video_url, "image_urls": image_urls, "resolution": resolution}
+        logging.info("Higgsfield → %s %s", GENJUTSU_MODEL, {"resolution": resolution, "images": len(image_urls)})
         res = await higgsfield_client.subscribe_async(GENJUTSU_MODEL, arguments=args)
     except GenError:
         raise
