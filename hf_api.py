@@ -3,12 +3,13 @@
 Ключ — HF_KEY в .env в виде «id_ключа:секрет» (open.higgsfield.ai → API Keys).
 Сейчас отсюда работает «Повтор тренда»: Genjutsu Light переносит движения из чужого видео
 на нашего персонажа или человека с фото. Звук исходного видео сохраняется.
+Ещё отсюда — Kling 3.0 Motion Control (третий способ «Повтора тренда», лучше держит руки).
 Ещё через Higgsfield идёт кнопка «Хорошо · Kling 3.0» (вдвое дешевле, чем на fal.ai), если задан HF_KEY.
 """
 import logging
 from pathlib import Path
 
-from config import GENJUTSU_MODEL, HF_KEY, VIDEO_MODELS
+from config import GENJUTSU_MODEL, HF_KEY, KLING3_MC_MODEL, VIDEO_MODELS
 from fal_api import GenError
 
 
@@ -73,6 +74,25 @@ async def motion_transfer(video: Path, images: list[Path] | Path, resolution: st
     except GenError:
         raise
     except Exception as e:  # noqa: BLE001 — переводим любую ошибку в понятный текст
+        logging.exception("Higgsfield ошибка")
+        raise GenError(_human(e)) from e
+    logging.info("Higgsfield ответ: %s", str(res)[:500])
+    return _video_url(res)
+
+
+async def kling3_motion(video: Path, image: Path) -> str:
+    """Kling 3.0 Motion Control (Standard): движения из video → персонаж с фото. Звук видео сохраняется."""
+    import higgsfield_client
+    try:
+        video_url = await higgsfield_client.upload_file_async(video)
+        image_url = await higgsfield_client.upload_file_async(image)
+        args = {"video_url": video_url, "image_url": image_url, "prompt": "",
+                "keep_original_sound": "yes", "character_orientation": "video"}
+        logging.info("Higgsfield → %s", KLING3_MC_MODEL)
+        res = await higgsfield_client.subscribe_async(KLING3_MC_MODEL, arguments=args)
+    except GenError:
+        raise
+    except Exception as e:  # noqa: BLE001
         logging.exception("Higgsfield ошибка")
         raise GenError(_human(e)) from e
     logging.info("Higgsfield ответ: %s", str(res)[:500])

@@ -159,10 +159,10 @@ SETTINGS_PATH = DATA_DIR / "settings.json"
 
 
 # «Повтор тренда»: Higgsfield Genjutsu Light — движения из чужого видео переносятся на персонажа с фото.
-# Цены с open.higgsfield.ai на 27.10.2026: сейчас скидка 50%, без скидки вдвое дороже.
-# Для лимита и показа берём цену БЕЗ скидки, чтобы не превысить дневной лимит, если скидка закончится.
+# Цены: 480p — по факту списаний с баланса Higgsfield API 02.11.2026 (два ролика по 10 с ≈ 1,70 $ → ≈ 0,085 $/с);
+# 720p и 1080p — примерно (вдвое и вчетверо), уточнить по балансу после первого ролика.
 GENJUTSU_MODEL = "higgsfield/genjutsu-light/motion-transfer/v1.0"
-GENJUTSU_USD_PER_SEC = {"480p": 0.05, "720p": 0.10, "1080p": 0.20}
+GENJUTSU_USD_PER_SEC = {"480p": 0.09, "720p": 0.18, "1080p": 0.36}
 GENJUTSU_MAX_SEC = 15                         # модель берёт только первые 15 секунд видео
 TREND_LENGTHS = (5, 10, 15)                   # выбор длины ролика: короче — дешевле
 
@@ -170,3 +170,10 @@ TREND_LENGTHS = (5, 10, 15)                   # выбор длины ролик
 # Цена с fal.ai/kling-motion-control на 30.10.2026: 0.07 $ за секунду готового видео.
 MOTION_FAL_MODEL = "fal-ai/kling-video/v2.6/standard/motion-control"
 MOTION_FAL_USD_PER_SEC = 0.07
+
+# Третий способ — Kling 3.0 Motion Control через Higgsfield API (баланс Higgsfield, нужен HF_KEY).
+# Лучше всех держит руки (когда в тренде руки у лица/головы). Звук исходного видео сохраняется.
+# Модель: docs.higgsfield.ai/docs/models/kling-3-motion-control/std. Цена в документации не указана —
+# берём ≈ 0,13 $/с (у fal.ai та же модель 0,126 $/с на 03.11.2026); уточнить по балансу после первого ролика.
+KLING3_MC_MODEL = "kling-video/v3/motion-control/std"
+KLING3_MC_USD_PER_SEC = 0.13
