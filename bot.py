@@ -26,7 +26,7 @@ from config import (ADMIN_IDS, BOT_TOKEN, DAILY_LIMIT_USD, DATA_DIR, DURATIONS, 
                     LIPSYNC_USD_PER_SEC, LOG_DIR, AZURE_VOICES, REFS_CUSTOM_DIR, REFS_DEFAULT_DIR, SCENE_MODEL, SCENE_PLANS, AVATAR_USD_PER_SEC,
                     SCENE_TEMPLATE, SCENE_TEMPLATES, GEMINI_API_KEY, GEMINI_VOICES, SOUND_TEMPLATES, TTS_USD_PER_1K, VIDEO_MODELS, VOICE_CHOICES,
                     GENJUTSU_MAX_SEC, GENJUTSU_USD_PER_SEC, KLING3_MC_USD_PER_SEC, MOTION_FAL_USD_PER_SEC,
-                    TREND_LENGTHS)
+                    SWAP_MIN_PIXELS, SWAP_MIN_SEC, SWAP_USD_PER_SEC, TREND_LENGTHS)
 
 # ---------- Лог: в файл (5 МБ × 3) и в консоль ----------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
@@ -68,6 +68,7 @@ class Flow(StatesGroup):
     pack = State()         # ждём фото настоящей пачки (или «пропустить»)
     trend_video = State()  # «Повтор тренда»: ждём видео с движением
     trend_photo = State()  # «Повтор тренда»: ждём фото того, кто будет двигаться
+    trend_target = State()  # «Точный повтор»: кого из людей в видео заменить
 
 
 # ---------- Доступ ----------
@@ -190,7 +191,8 @@ async def help_(msg: Message):
     lines += [f"• Повтор тренда (Kling 2.6, fal.ai) — {usd(MOTION_FAL_USD_PER_SEC * 5)} за 5 с"]
     if hf_api.enabled():
         lines += [f"• Повтор тренда (Higgsfield), 480p — ≈ {usd(GENJUTSU_USD_PER_SEC['480p'] * 5)} за 5 с",
-                  f"• Повтор тренда (Kling 3.0, Higgsfield) — ≈ {usd(KLING3_MC_USD_PER_SEC * 5)} за 5 с"]
+                  f"• Повтор тренда (Kling 3.0, Higgsfield) — ≈ {usd(KLING3_MC_USD_PER_SEC * 5)} за 5 с",
+                  f"• 🎯 Точный повтор (Higgsfield), 480p — ≈ {usd(SWAP_USD_PER_SEC['480p'] * 5)} за 5 с"]
     lines += ["",
               "Советы: фото товара — чёткое, при хорошем свете, товар крупно. "
               "Надписи, цены и логотип добавляйте потом в CapCut: ИИ искажает текст.",
@@ -592,7 +594,19 @@ async def run_video(bot: Bot, chat_id: int, user, data: dict, state: FSMContext)
 
 
 # ---------- Режим 4: повтор тренда (Higgsfield Genjutsu Light / Kling 3.0 / Kling 2.6) ----------
-TREND_SVC = {"kling": "Kling 2.6 (fal.ai)", "k3": "Kling 3.0 (Higgsfield)"}
+TREND_SVC = {"kling": "Kling 2.6 (fal.ai)", "k3": "Kling 3.0 (Higgsfield)",
+             "sw480p": "Точный повтор 480p", "sw720p": "Точный повтор 720p"}
+
+
+def trend_rate(res: str) -> float | None:
+    """Цена за секунду для выбранного способа (None — такого способа нет)."""
+    if res == "kling":
+        return MOTION_FAL_USD_PER_SEC
+    if res == "k3":
+        return KLING3_MC_USD_PER_SEC
+    if res.startswith("sw"):
+        return SWAP_USD_PER_SEC.get(res[2:])
+    return GENJUTSU_USD_PER_SEC.get(res)
 @router.message(F.text == BTN_TREND, Allowed())
 async def trend_start(msg: Message, state: FSMContext):
     await state.clear()
@@ -681,8 +695,11 @@ async def trend_ask_res(msg: Message, state: FSMContext):
     data = await state.get_data()
     sec = data.get("trend_sec", GENJUTSU_MAX_SEC)
     rows = []
+    if hf_api.enabled() and sec >= SWAP_MIN_SEC:
+        rows += [[(f"🎯 Точный повтор {r} — ≈ {usd(SWAP_USD_PER_SEC[r] * sec)}", f"tres:sw{r}")]
+                 for r in ("480p", "720p")]
     if hf_api.enabled():
-        rows += [[(f"Higgsfield {res} — до {usd(rate * sec)}", f"tres:{res}")]
+        rows += [[(f"Higgsfield {res} — ≈ {usd(rate * sec)}", f"tres:{res}")]
                  for res, rate in GENJUTSU_USD_PER_SEC.items()]
     if hf_api.enabled():
         rows.append([(f"Kling 3.0 (Higgsfield) — ≈ {usd(KLING3_MC_USD_PER_SEC * sec)}", "tres:k3")])
@@ -690,6 +707,8 @@ async def trend_ask_res(msg: Message, state: FSMContext):
     rows.append([("Отмена", "cancel")])
     await state.set_state(Flow.pick)
     await msg.answer(f"Чем делать? Ролик {sec} с.\n"
+                     "• 🎯 Точный повтор — меняется только один человек, остальные люди, причёски, комната и звук "
+                     "остаются как в оригинале (видео от 4 с).\n"
                      "• Higgsfield 480p/720p/1080p — фон и звук из видео. Если в тренде руки у лица или головы, "
                      "руки могут выйти плохо.\n"
                      "• Kling 3.0 (Higgsfield) — лучше всех держит руки, звук из видео сохраняется.\n"
@@ -702,22 +721,55 @@ async def trend_ask_res(msg: Message, state: FSMContext):
 async def trend_res(cb: CallbackQuery, state: FSMContext):
     res = cb.data.split(":", 1)[1]
     data = await state.get_data()
-    if res not in ("kling", "k3") and res not in GENJUTSU_USD_PER_SEC:
+    rate = trend_rate(res)
+    if rate is None or (res != "kling" and not hf_api.enabled()):
         await cb.answer()
         return
-    if res != "kling" and not hf_api.enabled():
-        await cb.answer()
-        return
-    rate = (MOTION_FAL_USD_PER_SEC if res == "kling" else KLING3_MC_USD_PER_SEC if res == "k3"
-            else GENJUTSU_USD_PER_SEC[res])
     price = round(rate * data.get("trend_sec", GENJUTSU_MAX_SEC), 2)
-    await state.update_data(trend_res=res, trend_price=price)
+    await state.update_data(trend_res=res, trend_price=price, trend_target="")
     await cb.message.edit_reply_markup(reply_markup=None)
-    await cb.message.answer(f"🕺 Повтор тренда: {data.get('trend_who', 'фото')}, "
-                            f"{TREND_SVC.get(res, 'Higgsfield ' + res)}, {data.get('trend_sec')} с.\n"
-                            f"Цена — до {usd(price)}. Запускаем?",
-                            reply_markup=kb([("▶️ Запустить", "tgo")], [("Отмена", "cancel")]))
     await cb.answer()
+    if res.startswith("sw"):
+        await state.set_state(Flow.trend_target)
+        await cb.message.answer("Кого из людей в видео заменить на персонажа?\n"
+                                "Нажмите кнопку — заменю главного (в центре, впереди). "
+                                "Или напишите словами, например: «мужчину в бежевом костюме».",
+                                reply_markup=kb([("🎯 Главного в центре", "ttg:main")], [("Отмена", "cancel")]))
+        return
+    await trend_confirm(cb.message, state)
+
+
+async def trend_confirm(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    res = data["trend_res"]
+    who = f"\nЗаменить: {data['trend_target']}." if data.get("trend_target") else ""
+    await state.set_state(Flow.pick)
+    await msg.answer(f"🕺 Повтор тренда: {data.get('trend_who', 'фото')}, "
+                     f"{TREND_SVC.get(res, 'Higgsfield ' + res)}, {data.get('trend_sec')} с.{who}\n"
+                     f"Цена — ≈ {usd(data['trend_price'])}. Запускаем?",
+                     reply_markup=kb([("▶️ Запустить", "tgo")], [("Отмена", "cancel")]))
+
+
+@router.callback_query(F.data == "ttg:main", Allowed())
+async def trend_target_main(cb: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    if not data.get("trend_res"):
+        await cb.answer("Данные устарели — начните заново через меню", show_alert=True)
+        return
+    await cb.answer()
+    await cb.message.edit_reply_markup(reply_markup=None)
+    await state.update_data(trend_target="")
+    await trend_confirm(cb.message, state)
+
+
+@router.message(Flow.trend_target, NOT_MENU, Allowed())
+async def trend_target_text(msg: Message, state: FSMContext):
+    text = (msg.text or "").strip()
+    if not text:
+        await msg.answer("Напишите словами, кого заменить, или нажмите «Главного в центре».")
+        return
+    await state.update_data(trend_target=text[:200])
+    await trend_confirm(msg, state)
 
 
 @router.callback_query(F.data == "tgo", Allowed())
@@ -744,7 +796,8 @@ async def run_trend(bot: Bot, chat_id: int, user, data: dict, state: FSMContext)
     temp: list[Path] = []
     sec, res, price = data["trend_sec"], data["trend_res"], data["trend_price"]
     svc = TREND_SVC.get(res, "Higgsfield " + res)
-    model_name = {"kling": "kling2.6-motion", "k3": "kling3-motion"}.get(res, "genjutsu-light")
+    model_name = {"kling": "kling2.6-motion", "k3": "kling3-motion"}.get(
+        res, "genjutsu-swap" if res.startswith("sw") else "genjutsu-light")
     status = await bot.send_message(chat_id, f"⏳ {svc} переносит движения… Обычно 2–6 минут. "
                                              "Можно пользоваться ботом дальше.")
     log.info("Тренд старт %s %s %s с", user.id, res, sec)
@@ -753,6 +806,11 @@ async def run_trend(bot: Bot, chat_id: int, user, data: dict, state: FSMContext)
             v_url = await fal_api.upload(Path(data["trend_video"]))
             i_url = await fal_api.upload(Path(data["trend_image"]))
             url = await fal_api.motion_control(v_url, i_url)
+        elif res.startswith("sw"):
+            src = await media.ensure_min_pixels(Path(data["trend_video"]), SWAP_MIN_PIXELS)
+            if src != Path(data["trend_video"]):
+                temp.append(src)
+            url = await hf_api.object_swap(src, Path(data["trend_image"]), res[2:], data.get("trend_target", ""))
         elif res == "k3":
             url = await hf_api.kling3_motion(Path(data["trend_video"]), Path(data["trend_image"]))
         else:
@@ -762,7 +820,7 @@ async def run_trend(bot: Bot, chat_id: int, user, data: dict, state: FSMContext)
             url = await hf_api.motion_transfer(Path(data["trend_video"]), imgs, res)
         clip = await media.download(url, "mp4")
         temp.append(clip)
-        if res == "kling":
+        if res == "kling" or res.startswith("sw"):
             clip = await media.add_audio_from(clip, Path(data["trend_video"]))
             if clip not in temp:
                 temp.append(clip)

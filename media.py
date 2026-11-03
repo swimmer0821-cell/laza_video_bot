@@ -130,6 +130,25 @@ async def trim(video: Path, seconds: int) -> Path:
     return dst
 
 
+async def ensure_min_pixels(video: Path, min_pixels: int) -> Path:
+    """Если кадр меньше min_pixels точек — увеличиваем видео (пропорции те же, звук сохраняется)."""
+    out = await _run("ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
+                     "-of", "csv=p=0", str(video))
+    try:
+        w, h = (int(x) for x in out.strip().split(",")[:2])
+    except ValueError:
+        return video
+    if w * h >= min_pixels:
+        return video
+    k = (min_pixels / (w * h)) ** 0.5 * 1.02
+    nw, nh = int(w * k) // 2 * 2 + 2, int(h * k) // 2 * 2 + 2
+    dst = new_path("mp4")
+    await _run("ffmpeg", "-y", "-loglevel", "error", "-i", str(video), "-vf", f"scale={nw}:{nh}:flags=lanczos",
+               "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
+               "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(dst))
+    return dst
+
+
 async def add_audio_from(video: Path, src: Path) -> Path:
     """Если в готовом ролике нет звука — подкладываем звук из исходного видео."""
     if await has_audio(video) or not await has_audio(src):

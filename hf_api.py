@@ -9,7 +9,7 @@
 import logging
 from pathlib import Path
 
-from config import GENJUTSU_MODEL, HF_KEY, KLING3_MC_MODEL, VIDEO_MODELS
+from config import GENJUTSU_MODEL, HF_KEY, KLING3_MC_MODEL, SWAP_MODEL, VIDEO_MODELS
 from fal_api import GenError
 
 
@@ -74,6 +74,29 @@ async def motion_transfer(video: Path, images: list[Path] | Path, resolution: st
     except GenError:
         raise
     except Exception as e:  # noqa: BLE001 — переводим любую ошибку в понятный текст
+        logging.exception("Higgsfield ошибка")
+        raise GenError(_human(e)) from e
+    logging.info("Higgsfield ответ: %s", str(res)[:500])
+    return _video_url(res)
+
+
+async def object_swap(video: Path, image: Path, resolution: str, target: str = "") -> str:
+    """Точный повтор: в video меняется один человек на персонажа с фото, остальное без изменений."""
+    import higgsfield_client
+    who = target.strip() or "the main person in the center / in front"
+    prompt = (f"Replace only {who} with the character from the reference image, exactly as in the reference "
+              "(same face, cap, clothes, colors, proportions). The character performs exactly the same moves and "
+              "positions. Keep every other person completely unchanged: same faces, hairstyles, clothes and moves. "
+              "Keep the room, lighting, camera and audio exactly the same.")
+    try:
+        video_url = await higgsfield_client.upload_file_async(video)
+        image_url = await higgsfield_client.upload_file_async(image)
+        args = {"video_url": video_url, "image_urls": [image_url], "prompt": prompt, "resolution": resolution}
+        logging.info("Higgsfield → %s %s", SWAP_MODEL, {"resolution": resolution})
+        res = await higgsfield_client.subscribe_async(SWAP_MODEL, arguments=args)
+    except GenError:
+        raise
+    except Exception as e:  # noqa: BLE001
         logging.exception("Higgsfield ошибка")
         raise GenError(_human(e)) from e
     logging.info("Higgsfield ответ: %s", str(res)[:500])

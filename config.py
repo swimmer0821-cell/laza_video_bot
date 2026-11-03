@@ -177,3 +177,12 @@ MOTION_FAL_USD_PER_SEC = 0.07
 # берём ≈ 0,13 $/с (у fal.ai та же модель 0,126 $/с на 03.11.2026); уточнить по балансу после первого ролика.
 KLING3_MC_MODEL = "kling-video/v3/motion-control/std"
 KLING3_MC_USD_PER_SEC = 0.13
+
+# «🎯 Точный повтор» — Higgsfield Genjutsu Object swap: в видео меняется ОДИН человек на персонажа с фото,
+# всё остальное (другие люди, причёски, комната, звук) остаётся как в оригинале. Проверено 03.11.2026 на сайте.
+# Модель: docs.higgsfield.ai/docs/models/genjutsu/object-swap. Цена в документации не указана; на сайте
+# 3 кредита/с в 480p и 7 кредитов/с в 720p → берём ≈ 0,18 / 0,42 / 0,84 $ за секунду, уточнить по балансу.
+SWAP_MODEL = "higgsfield/genjutsu/object-swap/v1.0"
+SWAP_USD_PER_SEC = {"480p": 0.18, "720p": 0.42, "1080p": 0.84}
+SWAP_MIN_PIXELS = 409_600                    # модель требует не меньше 409 600 точек в кадре
+SWAP_MIN_SEC = 4
