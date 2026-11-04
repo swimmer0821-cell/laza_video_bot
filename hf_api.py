@@ -89,7 +89,10 @@ async def object_swap(video: Path, image: Path, resolution: str, target: str = "
               "the reference (same face, cap, clothes, colors, proportions). There must be only ONE such character "
               "in the whole video. Do NOT replace anyone else, including people walking in the background or "
               f"appearing only briefly.{keep} The character performs exactly the same moves and positions as the "
-              "replaced person. Keep every other person completely unchanged: same faces, hairstyles, clothes and "
+              "replaced person and has the same height and width as that person on screen — never bigger, never "
+              "covering the people behind. The character always has its own short cartoon arms with white gloves, "
+              "also when it is partly hidden behind other people: no human hands, arms or sleeves on the character. "
+              "Keep every other person completely unchanged: same faces, hairstyles, clothes and "
               "moves. Keep the room, lighting, camera and audio exactly the same.")
     try:
         video_url = await higgsfield_client.upload_file_async(video)
