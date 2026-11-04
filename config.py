@@ -87,10 +87,30 @@ VIDEO_MODELS: dict[str, VideoModel] = {
                          15, 3, 0, 0.042, 0, "без звука, через Higgsfield") if KLING_VIA_HF else
               VideoModel("kling", "Хорошо · Kling 3.0", "fal-ai/kling-video/o3/standard/image-to-video",
                          15, 3, 0, 0.084, 0, "без звука")),
+}
+# Новые модели через Higgsfield API (open.higgsfield.ai/explore, 04.11.2026). Цены берём БЕЗ скидки
+# (скидки 30–60% временные, и у Genjutsu Light настоящее списание оказалось выше рекламы) — бот пишет «≈ до».
+if KLING_VIA_HF:
+    VIDEO_MODELS["wan3"] = VideoModel("wan3", "Недорого · Wan 3.0 со звуком", "alibaba/wan-3.0/image-to-video",
+                                      15, 2, 0, 0.10, 0, "со звуком, 720p, Higgsfield")
+    VIDEO_MODELS["k4"] = VideoModel("k4", "Лучшее движение · Kling 4.0", "kling-video/v4.0/image-to-video",
+                                    15, 3, 0, 0.157, 0, "без звука, 720p, Higgsfield")
+VIDEO_MODELS.update({
     "seed": VideoModel("seed", "Отлично · Seedance 2.0", "bytedance/seedance-2.0/fast/image-to-video",
                        15, 4, 0, 0.2419, 0, "со звуком, 720p"),
     "seed1080": VideoModel("seed1080", "Максимум · Seedance 2.0 1080p", "bytedance/seedance-2.0/image-to-video",
                            15, 4, 0, 0.682, 0, "со звуком, 1080p"),
+})
+
+# Подсказка в боте: какая модель для чего
+MODEL_HINTS = {
+    "wan": "черновик, проверить идею",
+    "ltx": "быстрый ролик товара со звуком",
+    "wan3": "дешёвый ролик товара со звуком — для частых постов",
+    "kling": "персонаж Лаза, держит внешность, недорого",
+    "k4": "сложные движения и персонаж — лучшее качество движения",
+    "seed": "реклама: красивый свет, звук хруста",
+    "seed1080": "главный рекламный ролик в 1080p",
 }
 
 DURATIONS = [5, 10, 15, 30]

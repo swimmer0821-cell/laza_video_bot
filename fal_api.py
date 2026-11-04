@@ -46,6 +46,9 @@ async def video_part(model: VideoModel, image_url: str, prompt: str, seconds: in
         sec = min(10, max(6, seconds + seconds % 2))   # LTX-2.3 Fast: только 6, 8 или 10 с
         args = {"image_url": image_url, "prompt": prompt, "duration": sec, "resolution": "1080p",
                 "aspect_ratio": "9:16", "generate_audio": True}
+    elif model.key in ("wan3", "k4"):
+        import hf_api
+        return await hf_api.image_to_video(model.endpoint, image_url, prompt, seconds, audio=model.key == "wan3")
     elif model.key == "kling" and KLING_VIA_HF:
         import hf_api   # здесь, а не вверху файла: hf_api сам импортирует fal_api
         return await hf_api.kling(image_url, prompt, seconds)

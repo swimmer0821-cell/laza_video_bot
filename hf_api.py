@@ -122,6 +122,22 @@ async def kling3_motion(video: Path, image: Path) -> str:
     return _video_url(res)
 
 
+async def image_to_video(endpoint: str, image_url: str, prompt: str, seconds: int, audio: bool) -> str:
+    """Ролик из картинки через Higgsfield API (Wan 3.0, Kling 4.0): 720p, длина seconds."""
+    import higgsfield_client
+    args = {"image_url": image_url, "prompt": prompt, "duration": int(seconds), "resolution": "720p"}
+    if audio:
+        args["generate_audio"] = True
+    try:
+        logging.info("Higgsfield → %s %s", endpoint, {"duration": args["duration"]})
+        res = await higgsfield_client.subscribe_async(endpoint, arguments=args)
+    except Exception as e:  # noqa: BLE001
+        logging.exception("Higgsfield ошибка")
+        raise GenError(_human(e)) from e
+    logging.info("Higgsfield ответ: %s", str(res)[:500])
+    return _video_url(res)
+
+
 async def kling(image_url: str, prompt: str, seconds: int) -> str:
     """Kling 3.0 Standard через Higgsfield: картинка (публичная ссылка) + промт → mp4 без звука."""
     import higgsfield_client

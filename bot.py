@@ -22,7 +22,7 @@ import hf_api
 import media
 import prompts
 import voice
-from config import (ADMIN_IDS, BOT_TOKEN, DAILY_LIMIT_USD, DATA_DIR, DURATIONS, IMAGE_PRICE_USD, LANGS,
+from config import (ADMIN_IDS, MODEL_HINTS, BOT_TOKEN, DAILY_LIMIT_USD, DATA_DIR, DURATIONS, IMAGE_PRICE_USD, LANGS,
                     LIPSYNC_USD_PER_SEC, LOG_DIR, AZURE_VOICES, REFS_CUSTOM_DIR, REFS_DEFAULT_DIR, SCENE_MODEL, SCENE_PLANS, AVATAR_USD_PER_SEC,
                     SCENE_TEMPLATE, SCENE_TEMPLATES, GEMINI_API_KEY, GEMINI_VOICES, SOUND_TEMPLATES, TTS_USD_PER_1K, VIDEO_MODELS, VOICE_CHOICES,
                     GENJUTSU_MAX_SEC, GENJUTSU_USD_PER_SEC, KLING3_MC_USD_PER_SEC, MOTION_FAL_USD_PER_SEC,
@@ -469,9 +469,11 @@ async def idea_auto(cb: CallbackQuery, state: FSMContext):
 async def pick_duration(cb: CallbackQuery, state: FSMContext):
     sec = int(cb.data.split(":")[1])
     await state.update_data(sec=sec)
-    rows = [[(f"{m.title} — {usd(m.price(sec))}", f"mdl:{m.key}")] for m in VIDEO_MODELS.values()
-            if not (m.fixed_part and sec > m.fixed_part)]   # склейка из кусков у черновой модели «плывёт»
-    await cb.message.edit_text(f"Длина: {sec} с. Выберите качество (цена за весь ролик):",
+    ms = [m for m in VIDEO_MODELS.values()
+          if not (m.fixed_part and sec > m.fixed_part)]   # склейка из кусков у черновой модели «плывёт»
+    rows = [[(f"{m.title} — ≈ {usd(m.price(sec))}", f"mdl:{m.key}")] for m in ms]
+    hints = "\n".join(f"• {m.title.split('·')[-1].strip()} — {MODEL_HINTS[m.key]}" for m in ms if m.key in MODEL_HINTS)
+    await cb.message.edit_text(f"Длина: {sec} с. Выберите модель (цена за весь ролик):\n{hints}",
                                reply_markup=kb(*rows))
     await cb.answer()
 
