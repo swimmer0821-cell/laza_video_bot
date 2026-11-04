@@ -26,7 +26,7 @@ from config import (ADMIN_IDS, MODEL_HINTS, BOT_TOKEN, DAILY_LIMIT_USD, DATA_DIR
                     LIPSYNC_USD_PER_SEC, LOG_DIR, AZURE_VOICES, REFS_CUSTOM_DIR, REFS_DEFAULT_DIR, SCENE_MODEL, SCENE_PLANS, AVATAR_USD_PER_SEC,
                     SCENE_TEMPLATE, SCENE_TEMPLATES, GEMINI_API_KEY, GEMINI_VOICES, SOUND_TEMPLATES, TTS_USD_PER_1K, VIDEO_MODELS, VOICE_CHOICES,
                     GENJUTSU_MAX_SEC, GENJUTSU_USD_PER_SEC, KLING3_MC_USD_PER_SEC, MOTION_FAL_USD_PER_SEC,
-                    SWAP_MIN_PIXELS, SWAP_MIN_SEC, SWAP_USD_PER_SEC, TREND_LENGTHS)
+                    SWAP_MIN_PIXELS, SWAP_MIN_SEC, SWAP_USD_PER_SEC, TREND_LENGTHS, WAN_ANIMATE_USD_PER_SEC)
 
 # ---------- Лог: в файл (5 МБ × 3) и в консоль ----------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
@@ -597,7 +597,7 @@ async def run_video(bot: Bot, chat_id: int, user, data: dict, state: FSMContext)
 
 # ---------- Режим 4: повтор тренда (Higgsfield Genjutsu Light / Kling 3.0 / Kling 2.6) ----------
 TREND_SVC = {"kling": "Kling 2.6 (fal.ai)", "k3": "Kling 3.0 (Higgsfield)",
-             "sw480p": "Точный повтор 480p", "sw720p": "Точный повтор 720p"}
+             "sw480p": "Точный повтор 480p", "sw720p": "Точный повтор 720p", "wa": "Wan Animate (fal.ai)"}
 
 
 def trend_rate(res: str) -> float | None:
@@ -606,6 +606,8 @@ def trend_rate(res: str) -> float | None:
         return MOTION_FAL_USD_PER_SEC
     if res == "k3":
         return KLING3_MC_USD_PER_SEC
+    if res == "wa":
+        return WAN_ANIMATE_USD_PER_SEC
     if res.startswith("sw"):
         return SWAP_USD_PER_SEC.get(res[2:])
     return GENJUTSU_USD_PER_SEC.get(res)
@@ -697,6 +699,7 @@ async def trend_ask_res(msg: Message, state: FSMContext):
     data = await state.get_data()
     sec = data.get("trend_sec", GENJUTSU_MAX_SEC)
     rows = []
+    rows.append([(f"💸 Дешёвая замена · Wan Animate — ≈ {usd(WAN_ANIMATE_USD_PER_SEC * sec)}", "tres:wa")])
     if hf_api.enabled() and sec >= SWAP_MIN_SEC:
         rows += [[(f"🎯 Точный повтор {r} — ≈ {usd(SWAP_USD_PER_SEC[r] * sec)}", f"tres:sw{r}")]
                  for r in ("480p", "720p")]
@@ -709,6 +712,8 @@ async def trend_ask_res(msg: Message, state: FSMContext):
     rows.append([("Отмена", "cancel")])
     await state.set_state(Flow.pick)
     await msg.answer(f"Чем делать? Ролик {sec} с.\n"
+                     "• 💸 Дешёвая замена (Wan Animate, fal.ai) — тоже меняет человека и оставляет сцену, "
+                     "в 3–5 раз дешевле; кого менять, модель выбирает сама (обычно самого заметного). Пробная.\n"
                      "• 🎯 Точный повтор — меняется только один человек, остальные люди, причёски, комната и звук "
                      "остаются как в оригинале (видео от 4 с).\n"
                      "• Higgsfield 480p/720p/1080p — фон и звук из видео. Если в тренде руки у лица или головы, "
@@ -724,7 +729,7 @@ async def trend_res(cb: CallbackQuery, state: FSMContext):
     res = cb.data.split(":", 1)[1]
     data = await state.get_data()
     rate = trend_rate(res)
-    if rate is None or (res != "kling" and not hf_api.enabled()):
+    if rate is None or (res not in ("kling", "wa") and not hf_api.enabled()):
         await cb.answer()
         return
     price = round(rate * data.get("trend_sec", GENJUTSU_MAX_SEC), 2)
@@ -829,7 +834,7 @@ async def run_trend(bot: Bot, chat_id: int, user, data: dict, state: FSMContext)
     temp: list[Path] = []
     sec, res, price = data["trend_sec"], data["trend_res"], data["trend_price"]
     svc = TREND_SVC.get(res, "Higgsfield " + res)
-    model_name = {"kling": "kling2.6-motion", "k3": "kling3-motion"}.get(
+    model_name = {"kling": "kling2.6-motion", "k3": "kling3-motion", "wa": "wan-animate-replace"}.get(
         res, "genjutsu-swap" if res.startswith("sw") else "genjutsu-light")
     status = await bot.send_message(chat_id, f"⏳ {svc} переносит движения… Обычно 2–6 минут. "
                                              "Можно пользоваться ботом дальше.")
@@ -839,6 +844,10 @@ async def run_trend(bot: Bot, chat_id: int, user, data: dict, state: FSMContext)
             v_url = await fal_api.upload(Path(data["trend_video"]))
             i_url = await fal_api.upload(Path(data["trend_image"]))
             url = await fal_api.motion_control(v_url, i_url)
+        elif res == "wa":
+            v_url = await fal_api.upload(Path(data["trend_video"]))
+            i_url = await fal_api.upload(Path(data["trend_image"]))
+            url = await fal_api.animate_replace(v_url, i_url)
         elif res.startswith("sw"):
             src = await media.ensure_min_pixels(Path(data["trend_video"]), SWAP_MIN_PIXELS)
             if src != Path(data["trend_video"]):
@@ -854,7 +863,7 @@ async def run_trend(bot: Bot, chat_id: int, user, data: dict, state: FSMContext)
             url = await hf_api.motion_transfer(Path(data["trend_video"]), imgs, res)
         clip = await media.download(url, "mp4")
         temp.append(clip)
-        if res == "kling" or res.startswith("sw"):
+        if res in ("kling", "wa") or res.startswith("sw"):
             clip = await media.add_audio_from(clip, Path(data["trend_video"]))
             if clip not in temp:
                 temp.append(clip)

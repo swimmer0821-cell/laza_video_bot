@@ -5,7 +5,8 @@ from pathlib import Path
 
 import fal_client
 
-from config import AVATAR_MODEL, IMAGE_MODEL, KLING_VIA_HF, LIPSYNC_MODEL, MOTION_FAL_MODEL, TTS_MODEL, VideoModel
+from config import (AVATAR_MODEL, IMAGE_MODEL, KLING_VIA_HF, LIPSYNC_MODEL, MOTION_FAL_MODEL, TTS_MODEL, VideoModel,
+                    WAN_ANIMATE_MODEL)
 
 
 class GenError(Exception):
@@ -71,6 +72,15 @@ async def motion_control(video_url: str, image_url: str, prompt: str = "") -> st
     if prompt:
         args["prompt"] = prompt
     res = await _call(MOTION_FAL_MODEL, args)
+    try:
+        return res["video"]["url"]
+    except (KeyError, TypeError) as e:
+        raise GenError("Сервис не вернул видео. Попробуйте ещё раз.") from e
+
+
+async def animate_replace(video_url: str, image_url: str) -> str:
+    """Дешёвая замена персонажа (Wan 2.2 Animate Replace): человек в видео → персонаж с фото, сцена та же."""
+    res = await _call(WAN_ANIMATE_MODEL, {"video_url": video_url, "image_url": image_url, "resolution": "480p"})
     try:
         return res["video"]["url"]
     except (KeyError, TypeError) as e:
