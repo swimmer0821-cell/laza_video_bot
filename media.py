@@ -71,6 +71,18 @@ async def last_frame(video: Path) -> Path:
     return dst
 
 
+async def frames_at(video: Path, fractions: list[float]) -> list[Path]:
+    """Кадры в разных местах ролика (доли длины 0…1), уменьшенные до 512 px по ширине."""
+    dur = await duration(video)
+    out = []
+    for f in fractions:
+        dst = new_path("jpg")
+        await _run("ffmpeg", "-y", "-loglevel", "error", "-ss", f"{max(0.0, dur * f):.2f}", "-i", str(video),
+                   "-frames:v", "1", "-vf", "scale=512:-2", "-q:v", "3", str(dst))
+        out.append(dst)
+    return out
+
+
 async def first_frame(video: Path) -> Path:
     """Первый кадр ролика — стартовый кадр для говорящей версии."""
     dst = new_path("jpg")

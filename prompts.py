@@ -97,6 +97,23 @@ async def _ask(system: str, images: list[Path], text: str) -> dict:
     return _parse(out)
 
 
+async def swap_target(frames: list[Path], user_text: str = "") -> dict:
+    """Кого заменить в «Точном повторе»: Claude смотрит кадры и описывает ОДНОГО человека так,
+    чтобы его нельзя было спутать с остальными. Ответ: {"en": ..., "others_en": ..., "ru": ...}."""
+    system = ("You look at frames from one short video (in time order) and pick exactly ONE person to be replaced "
+              "by a cartoon character. Describe that person so they cannot be confused with anyone else: "
+              "clothes, colors, hair, accessories, body type, where they are in the frame and when they appear. "
+              "Then briefly describe the OTHER people who must stay unchanged (including people walking in the "
+              "background or appearing only for a moment). Answer only JSON: "
+              '{"en": "<the person to replace, English, one sentence>", '
+              '"others_en": "<everyone else who must stay human, English, one sentence>", '
+              '"ru": "<the person to replace, Russian, short, for the user>"}')
+    task = (f"The user wants to replace: {user_text}" if user_text.strip() else
+            "The user wants to replace the MAIN performer: the most prominent person "
+            "(biggest on screen, in front/center for most of the video, the lead dancer).")
+    return await _ask(system, frames, task)
+
+
 async def video_plan(image: Path, idea: str, parts: list[int], kind: str) -> dict:
     """План ролика: части с длительностью и английским промтом."""
     who = "the LAZA mascot character" if kind == "character" else "a LAZA product photo"

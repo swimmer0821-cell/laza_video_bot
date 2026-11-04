@@ -728,7 +728,7 @@ async def trend_res(cb: CallbackQuery, state: FSMContext):
         await cb.answer()
         return
     price = round(rate * data.get("trend_sec", GENJUTSU_MAX_SEC), 2)
-    await state.update_data(trend_res=res, trend_price=price, trend_target="")
+    await state.update_data(trend_res=res, trend_price=price, trend_target="", trend_others="", trend_target_ru="")
     await cb.message.edit_reply_markup(reply_markup=None)
     await cb.answer()
     if res.startswith("sw"):
@@ -741,15 +741,48 @@ async def trend_res(cb: CallbackQuery, state: FSMContext):
     await trend_confirm(cb.message, state)
 
 
+async def trend_describe(msg: Message, state: FSMContext, user_text: str = ""):
+    """Claude смотрит кадры видео и описывает ОДНОГО человека для замены (чтобы модель не меняла нескольких)."""
+    data = await state.get_data()
+    wait = await msg.answer("🔎 Смотрю видео, кого заменить…")
+    frames: list[Path] = []
+    try:
+        frames = await media.frames_at(Path(data["trend_video"]), [0.15, 0.4, 0.65, 0.9])
+        t = await prompts.swap_target(frames, user_text)
+        await state.update_data(trend_target=str(t.get("en", ""))[:400], trend_others=str(t.get("others_en", ""))[:400],
+                                trend_target_ru=str(t.get("ru", "") or user_text)[:200])
+    except Exception:  # noqa: BLE001 — без описания модель всё равно попробует заменить главного
+        log.exception("Ошибка описания цели")
+        await state.update_data(trend_target=user_text[:200], trend_others="", trend_target_ru=user_text[:200])
+    finally:
+        media.cleanup(*frames)
+        try:
+            await wait.delete()
+        except Exception:  # noqa: BLE001
+            pass
+    await trend_confirm(msg, state)
+
+
 async def trend_confirm(msg: Message, state: FSMContext):
     data = await state.get_data()
     res = data["trend_res"]
-    who = f"\nЗаменить: {data['trend_target']}." if data.get("trend_target") else ""
+    who = f"\nЗаменю: {data['trend_target_ru']}." if data.get("trend_target_ru") else ""
     await state.set_state(Flow.pick)
     await msg.answer(f"🕺 Повтор тренда: {data.get('trend_who', 'фото')}, "
                      f"{TREND_SVC.get(res, 'Higgsfield ' + res)}, {data.get('trend_sec')} с.{who}\n"
                      f"Цена — ≈ {usd(data['trend_price'])}. Запускаем?",
-                     reply_markup=kb([("▶️ Запустить", "tgo")], [("Отмена", "cancel")]))
+                     reply_markup=kb([("▶️ Запустить", "tgo")],
+                                     *([[("✏️ Другого человека", "ttg:other")]] if res.startswith("sw") else []),
+                                     [("Отмена", "cancel")]))
+
+
+@router.callback_query(F.data == "ttg:other", Allowed())
+async def trend_target_other(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
+    await cb.message.edit_reply_markup(reply_markup=None)
+    await state.set_state(Flow.trend_target)
+    await cb.message.answer("Напишите, кого заменить: одежда, волосы, где стоит. Например: «мужчину в бежевом костюме "
+                            "с бабочкой и светлым париком».")
 
 
 @router.callback_query(F.data == "ttg:main", Allowed())
@@ -760,8 +793,7 @@ async def trend_target_main(cb: CallbackQuery, state: FSMContext):
         return
     await cb.answer()
     await cb.message.edit_reply_markup(reply_markup=None)
-    await state.update_data(trend_target="")
-    await trend_confirm(cb.message, state)
+    await trend_describe(cb.message, state)
 
 
 @router.message(Flow.trend_target, NOT_MENU, Allowed())
@@ -770,8 +802,7 @@ async def trend_target_text(msg: Message, state: FSMContext):
     if not text:
         await msg.answer("Напишите словами, кого заменить, или нажмите «Главного в центре».")
         return
-    await state.update_data(trend_target=text[:200])
-    await trend_confirm(msg, state)
+    await trend_describe(msg, state, text[:200])
 
 
 @router.callback_query(F.data == "tgo", Allowed())
@@ -812,7 +843,8 @@ async def run_trend(bot: Bot, chat_id: int, user, data: dict, state: FSMContext)
             src = await media.ensure_min_pixels(Path(data["trend_video"]), SWAP_MIN_PIXELS)
             if src != Path(data["trend_video"]):
                 temp.append(src)
-            url = await hf_api.object_swap(src, Path(data["trend_image"]), res[2:], data.get("trend_target", ""))
+            url = await hf_api.object_swap(src, Path(data["trend_image"]), res[2:], data.get("trend_target", ""),
+                                           data.get("trend_others", ""))
         elif res == "k3":
             url = await hf_api.kling3_motion(Path(data["trend_video"]), Path(data["trend_image"]))
         else:

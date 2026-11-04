@@ -80,14 +80,17 @@ async def motion_transfer(video: Path, images: list[Path] | Path, resolution: st
     return _video_url(res)
 
 
-async def object_swap(video: Path, image: Path, resolution: str, target: str = "") -> str:
+async def object_swap(video: Path, image: Path, resolution: str, target: str = "", others: str = "") -> str:
     """Точный повтор: в video меняется один человек на персонажа с фото, остальное без изменений."""
     import higgsfield_client
     who = target.strip() or "the main person in the center / in front"
-    prompt = (f"Replace only {who} with the character from the reference image, exactly as in the reference "
-              "(same face, cap, clothes, colors, proportions). The character performs exactly the same moves and "
-              "positions. Keep every other person completely unchanged: same faces, hairstyles, clothes and moves. "
-              "Keep the room, lighting, camera and audio exactly the same.")
+    keep = f" These people stay human and unchanged: {others.strip()}" if others.strip() else ""
+    prompt = (f"Replace EXACTLY ONE person — {who} — with the character from the reference image, exactly as in "
+              "the reference (same face, cap, clothes, colors, proportions). There must be only ONE such character "
+              "in the whole video. Do NOT replace anyone else, including people walking in the background or "
+              f"appearing only briefly.{keep} The character performs exactly the same moves and positions as the "
+              "replaced person. Keep every other person completely unchanged: same faces, hairstyles, clothes and "
+              "moves. Keep the room, lighting, camera and audio exactly the same.")
     try:
         video_url = await higgsfield_client.upload_file_async(video)
         image_url = await higgsfield_client.upload_file_async(image)
