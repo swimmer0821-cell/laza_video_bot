@@ -16,6 +16,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (CallbackQuery, ErrorEvent, FSInputFile, InlineKeyboardButton,
                            InlineKeyboardMarkup, KeyboardButton, Message, ReplyKeyboardMarkup)
 
+import balance
 import db
 import fal_api
 import hf_api
@@ -26,7 +27,7 @@ from config import (ADMIN_IDS, MODEL_HINTS, BOT_TOKEN, DAILY_LIMIT_USD, DATA_DIR
                     LIPSYNC_USD_PER_SEC, LOG_DIR, AZURE_VOICES, REFS_CUSTOM_DIR, REFS_DEFAULT_DIR, SCENE_MODEL, SCENE_PLANS, AVATAR_USD_PER_SEC,
                     SCENE_TEMPLATE, SCENE_TEMPLATES, GEMINI_API_KEY, GEMINI_VOICES, SOUND_TEMPLATES, TTS_USD_PER_1K, VIDEO_MODELS, VOICE_CHOICES,
                     GENJUTSU_MAX_SEC, GENJUTSU_USD_PER_SEC, KLING3_MC_USD_PER_SEC, MOTION_FAL_USD_PER_SEC,
-                    SWAP_MIN_PIXELS, SWAP_MIN_SEC, SWAP_USD_PER_SEC, TREND_LENGTHS, WAN_ANIMATE_USD_PER_SEC)
+                    SWAP_MIN_PIXELS, SWAP_MIN_SEC, SWAP_USD_PER_SEC, TREND_LENGTHS)
 
 # ---------- Лог: в файл (5 МБ × 3) и в консоль ----------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
@@ -201,14 +202,28 @@ async def help_(msg: Message):
         lines += ["", "Для руководителя:", "/add id Имя — дать доступ", "/del id — убрать доступ",
                   "/users — список", "/refs — эталоны персонажа", "/ref_add — добавить эталон",
                   "/ref_reset — вернуть стандартные эталоны",
+                  "/hf_balance сумма — остаток Higgsfield с console.higgsfield.ai (бот потом вычитает траты)",
                   f"/voice — голос Лазы (сейчас: {voice.engine('ru')})",
                   "/stress — ударение в имени Лаза (выбрать на слух)"]
     await msg.answer("\n".join(lines))
 
 
 @router.message(F.text == BTN_SPENT, Allowed())
+@router.message(Command("balance"), Allowed())
 async def spent(msg: Message):
-    await msg.answer("💰 Расходы на генерации\n\n" + db.report())
+    await msg.answer(await balance.text() + "\n\n💰 Расходы на генерации\n\n" + db.report())
+
+
+@router.message(Command("hf_balance"), Admin())
+async def hf_balance_cmd(msg: Message, command: CommandObject):
+    raw = (command.args or "").strip().replace(",", ".").replace("$", "")
+    try:
+        amount = float(raw)
+    except ValueError:
+        await msg.answer("Формат: /hf_balance 12.50 — сумма в $ с console.higgsfield.ai (Billing).")
+        return
+    balance.set_hf(amount)
+    await msg.answer(f"✅ Запомнил остаток Higgsfield: {usd(amount)}. Дальше вычитаю траты бота.")
 
 
 @router.message(Command("cancel"), Allowed())
@@ -505,7 +520,8 @@ async def pick_model(cb: CallbackQuery, state: FSMContext):
     await cb.message.edit_text(
         f"🎬 {plan.get('summary_ru', '')}\n\n"
         f"Модель: {m.title} ({m.note})\nДлина: {sec} с{extra}{split}\n"
-        f"Цена: ≈ {usd(price)}\nСегодня уже потрачено: {usd(db.spent_today())} из {usd(DAILY_LIMIT_USD)}",
+        f"Цена: ≈ {usd(price)}\nСегодня уже потрачено: {usd(db.spent_today())} из {usd(DAILY_LIMIT_USD)}\n"
+        f"{await balance.text(short=True)}",
         reply_markup=kb([("✅ Запустить", "go")], [("✏️ Другая идея", "newidea"), ("❌ Отмена", "cancel")]))
     await cb.answer()
 
@@ -606,8 +622,6 @@ def trend_rate(res: str) -> float | None:
         return MOTION_FAL_USD_PER_SEC
     if res == "k3":
         return KLING3_MC_USD_PER_SEC
-    if res == "wa":
-        return WAN_ANIMATE_USD_PER_SEC
     if res.startswith("sw"):
         return SWAP_USD_PER_SEC.get(res[2:])
     return GENJUTSU_USD_PER_SEC.get(res)
@@ -699,7 +713,6 @@ async def trend_ask_res(msg: Message, state: FSMContext):
     data = await state.get_data()
     sec = data.get("trend_sec", GENJUTSU_MAX_SEC)
     rows = []
-    rows.append([(f"💸 Дешёвая замена · Wan Animate — ≈ {usd(WAN_ANIMATE_USD_PER_SEC * sec)}", "tres:wa")])
     if hf_api.enabled() and sec >= SWAP_MIN_SEC:
         rows += [[(f"🎯 Точный повтор {r} — ≈ {usd(SWAP_USD_PER_SEC[r] * sec)}", f"tres:sw{r}")]
                  for r in ("480p", "720p")]
@@ -712,8 +725,6 @@ async def trend_ask_res(msg: Message, state: FSMContext):
     rows.append([("Отмена", "cancel")])
     await state.set_state(Flow.pick)
     await msg.answer(f"Чем делать? Ролик {sec} с.\n"
-                     "• 💸 Дешёвая замена (Wan Animate, fal.ai) — тоже меняет человека и оставляет сцену, "
-                     "в 3–5 раз дешевле; кого менять, модель выбирает сама (обычно самого заметного). Пробная.\n"
                      "• 🎯 Точный повтор — меняется только один человек, остальные люди, причёски, комната и звук "
                      "остаются как в оригинале (видео от 4 с).\n"
                      "• Higgsfield 480p/720p/1080p — фон и звук из видео. Если в тренде руки у лица или головы, "
@@ -775,7 +786,7 @@ async def trend_confirm(msg: Message, state: FSMContext):
     await state.set_state(Flow.pick)
     await msg.answer(f"🕺 Повтор тренда: {data.get('trend_who', 'фото')}, "
                      f"{TREND_SVC.get(res, 'Higgsfield ' + res)}, {data.get('trend_sec')} с.{who}\n"
-                     f"Цена — ≈ {usd(data['trend_price'])}. Запускаем?",
+                     f"Цена — ≈ {usd(data['trend_price'])}.\n{await balance.text(short=True)}\nЗапускаем?",
                      reply_markup=kb([("▶️ Запустить", "tgo")],
                                      *([[("✏️ Другого человека", "ttg:other")]] if res.startswith("sw") else []),
                                      [("Отмена", "cancel")]))

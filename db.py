@@ -64,6 +64,14 @@ def spent_since(start: datetime) -> float:
         return round(row[0], 2)
 
 
+def spent_since_where(start: datetime, pick) -> float:
+    """Сумма успешных трат с момента start только по моделям, для которых pick(model) истинно."""
+    with closing(_conn()) as c:
+        rows = c.execute("SELECT model, cost FROM gens WHERE status='ok' AND ts>=?",
+                         (start.isoformat(timespec="seconds"),)).fetchall()
+    return round(sum(cost for model, cost in rows if pick(model)), 2)
+
+
 def spent_today() -> float:
     now = datetime.now(TZ)
     return spent_since(now.replace(hour=0, minute=0, second=0, microsecond=0))
